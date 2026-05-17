@@ -2,7 +2,7 @@
 
 All notable changes to Options Strategy Analyzer.
 
-## [2.1.0] - 2025-01-13
+## [2.1.0] - 2026-05-13
 
 ### Added
 - Interactive configuration (Code Cell 1A) for easy ticker/mode selection
@@ -19,7 +19,7 @@ All notable changes to Options Strategy Analyzer.
 - Total trades reduced: 219 → 138 (eliminated losing trades)
 - Strategy rating: GOOD → EXCELLENT
 
-## [2.0.0] - 2025-01-12
+## [2.0.0] - 2026-04-21
 
 ### Added
 - Historical backtesting framework
@@ -28,14 +28,14 @@ All notable changes to Options Strategy Analyzer.
 - Trade-by-trade CSV export
 - Configurable backtest parameters
 
-## [1.8.0] - 2024-12-XX
+## [1.8.0] - 2026-04-14
 
 ### Added
 - Multi-timeframe analysis (daily + weekly)
 - Timeframe alignment checking
 - Signal conviction boosting for aligned trades
 
-## [1.7.0] - 2024-12-XX
+## [1.7.0] - 2026-04-07
 
 ### Added
 - Price chart visualization with signal markers
@@ -43,52 +43,52 @@ All notable changes to Options Strategy Analyzer.
 - Timezone configuration (US/Eastern default)
 - Fixed timestamp display in journal
 
-## [1.6.0] - 2024-11-XX
+## [1.6.0] - 2026-03-23
 
 ### Added
 - CSV trade journal export
 - Automatic logging of all signals
 
-## [1.5.0] - 2024-11-XX
+## [1.5.0] - 2026-03-11
 
 ### Fixed
 - Volume distribution/accumulation logic
 - Corrected institutional buying/selling interpretation
 
-## [1.4.1] - 2024-10-XX
+## [1.4.1] - 2026-03-04
 
 ### Fixed
 - Greeks calculation using Black-Scholes model
 - Fallback when yfinance doesn't provide Greeks
 
-## [1.4.0] - 2024-10-XX
+## [1.4.0] - 2026-3-03
 
 ### Added
 - Options Greeks display (Delta, Gamma, Theta, Vega)
 - Greeks-based position warnings
 - Break-even calculations
 
-## [1.3.0] - 2024-09-XX
+## [1.3.0] - 2026-02-25
 
 ### Added
 - Minimum volume and open interest filters
 - Liquidity warnings
 - Bid/ask spread percentage checks
 
-## [1.2.0] - 2024-09-XX
+## [1.2.0] - 2026-02-18
 
 ### Added
 - Data validation for options chains
 - Error handling improvements
 - Sanity checks for option pricing
 
-## [1.1.0] - 2024-08-XX
+## [1.1.0] - 2026-02-11
 
 ### Fixed
 - RSI divergence detection using pivot points
 - Swing high/low identification
 
-## [1.0.0] - 2024-08-XX
+## [1.0.0] - 2026-01-29
 
 ### Initial Release
 - Basic scanner framework
