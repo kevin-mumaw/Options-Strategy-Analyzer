@@ -1,8 +1,59 @@
 # Changelog
 
-All notable changes to Options Strategy Analyzer.
+All notable changes to the Options Strategy Analyzer project.
 
-## [2.1.0] - 2026-05-13
+## [2.6.0] - 2026-05-17
+
+### Changed
+- Tightened mixed-regime signal filtering
+- Added higher-quality requirements for mixed-regime bullish CALL setups
+- Continued refinement of regime-aware trade selection
+
+### Notes
+- Current development version
+- Validation ongoing
+
+## [2.5.0] - 2026-05-13
+
+### Added
+- Benchmark warm-up history for regime classification
+- Setup-by-regime diagnostics
+
+### Changed
+- Filtered `Clean uptrend` CALL setups in MIXED regimes by default
+- Focus shifted to mixed-regime tightening
+
+## [2.4.0] - 2026-05-08
+
+### Added
+- Market regime filter using benchmark trend structure
+- Regime classification: BULLISH, MIXED, BEARISH
+- Regime-aware signal filtering
+- Backtest diagnostics by regime
+
+### Changed
+- Reduced bullish CALL exposure in bearish conditions
+- Added modest bearish-regime PUT expansion
+
+## [2.3.0] - 2026-05-05
+
+### Added
+- Expanded default backtest range to start in 2018
+- Final version review cell
+- Improved notebook structure and backtest realism
+
+### Changed
+- Prevented overlapping trades on the same ticker in backtesting
+
+## [2.2.0] - 2026-05-02
+
+### Changed
+- Optimized exit parameters
+- Hold period reduced: 21 days → 17 days
+- Stop loss tightened: -50% → -35%
+- Profit target adjusted: +100% → +75%
+
+## [2.1.0] - 2026-04-28
 
 ### Added
 - Interactive configuration (Code Cell 1A) for easy ticker/mode selection
@@ -81,7 +132,7 @@ All notable changes to Options Strategy Analyzer.
 - Data validation for options chains
 - Error handling improvements
 - Sanity checks for option pricing
-
+  
 ## [1.1.0] - 2026-02-11
 
 ### Fixed
