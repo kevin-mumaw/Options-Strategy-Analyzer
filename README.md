@@ -1,62 +1,48 @@
 # 📊 Options Strategy Analyzer
 
-A systematic options trading strategy that combines technical analysis, reversal pattern detection, and rigorous backtesting to identify high-probability directional trades.
+A Google Colab notebook for researching and validating directional options strategies using technical analysis, reversal detection, market regime filters, and historical backtesting.
 
-![Version](https://img.shields.io/badge/version-2.1-blue)
-![Python](https://img.shields.io/badge/python-3.8+-green)
-![License](https://img.shields.io/badge/license-MIT-orange)
+## Current Status
+- **Current Development Version:** v2.6
+- **Project Status:** Active development and validation
+- **Platform:** Google Colab
+- **Language:** Python
 
-## 🎯 Performance
+## Core Features
+- Technical indicator analysis
+- Reversal pattern detection
+- Multi-timeframe confirmation
+- Market regime filtering
+- Options chain review
+- Greeks display
+- Position sizing and risk controls
+- Historical backtesting
+- CSV trade journaling
 
-Based on 2-year backtest (2023-2024) on GOOGL and AAPL:
+## Notebook Workflow
+1. Open the notebook in Google Colab
+2. Run the configuration cells
+3. Choose live scan or backtest mode
+4. Review signals, options data, and risk metrics
+5. Validate changes with backtesting before using live
 
-| Metric | Result |
-|--------|--------|
-| **Win Rate** | 68.8% |
-| **Profit Factor** | 4.16 |
-| **Total Trades** | 138 |
-| **Rating** | EXCELLENT |
+## Repository Contents
+- `notebooks/` — Main Colab notebook
+- `docs/` — Supporting documentation
+- `examples/` — Example output files
+- `images/` — Screenshots and visuals
 
-*Strategy makes $4.16 for every $1 risked over the test period.*
+## Important Note
+This project is under active development. Strategy logic, filters, and backtest assumptions may change between versions as validation results are reviewed.
 
----
+## Disclaimer
+For educational purposes only. This project is not financial advice.
 
-## ✨ Features
+Options trading involves substantial risk:
+- Past performance does not guarantee future results
+- Backtests use assumptions and simplifications
+- Always paper trade before risking real capital
+- Consult a qualified financial professional before making investment decisions
 
-### Core Capabilities
-- **Multi-Factor Signal Generation**: Combines RSI, moving averages, volume analysis, and reversal patterns
-- **Historical Backtesting**: Validate strategies on years of data before risking capital
-- **Multi-Timeframe Analysis**: Daily + weekly chart confirmation for higher conviction
-- **Options Greeks Integration**: Full risk profile with Delta, Theta, Vega, Gamma
-- **Dynamic Position Sizing**: Adjusts allocation based on signal strength (3-5% risk per trade)
-- **Trade Journaling**: Automatic CSV export of all signals and performance metrics
-
-### Technical Analysis
-- RSI divergence detection (proper pivot point identification)
-- Volume distribution/accumulation analysis
-- Climax top detection
-- Failed breakout identification
-- Moving average breakdown signals
-
-### Risk Management
-- Configurable stop-loss and profit targets
-- Position concentration limits (max 20% per trade)
-- Multi-position portfolio management
-- Liquidity filtering (minimum volume/open interest)
-
----
-
-## 🚀 Quick Start
-
-### 1. Installation
-
-**Open in Google Colab** (recommended):
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kevin-mumaw/Options_Strategy_Analyzer_(Version_2_1).ipynb/blob/main/Options_Strategy_Analyzer.ipynb)
-
-**Or install locally:**
-
-```bash
-git clone https://github.com/kevin-mumaw/options-strategy-analyzer.git
-cd options-strategy-analyzer
-pip install -r requirements.txt
+## License
+MIT License
