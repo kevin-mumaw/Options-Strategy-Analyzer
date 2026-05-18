@@ -112,7 +112,7 @@ All notable changes to the Options Strategy Analyzer project.
 - Greeks calculation using Black-Scholes model
 - Fallback when yfinance doesn't provide Greeks
 
-## [1.4.0] - 2026-3-03
+## [1.4.0] - 2026-03-03
 
 ### Added
 - Options Greeks display (Delta, Gamma, Theta, Vega)
@@ -132,7 +132,7 @@ All notable changes to the Options Strategy Analyzer project.
 - Data validation for options chains
 - Error handling improvements
 - Sanity checks for option pricing
-  
+
 ## [1.1.0] - 2026-02-11
 
 ### Fixed
@@ -143,6 +143,3 @@ All notable changes to the Options Strategy Analyzer project.
 
 ### Initial Release
 - Basic scanner framework
-- RSI, moving averages, volume analysis
-- Position sizing
-- Options chain retrieval
