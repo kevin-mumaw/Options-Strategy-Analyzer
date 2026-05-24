@@ -2,6 +2,7 @@
 options_scanner_v4.py
 =====================
 Phase 1 — CALL-side scanner with quality scoring gate.
+Aligned with Jason Brown's PTU trading principles.
 
 Design philosophy:
   - Only generate a signal when conviction score >= 6/10
@@ -9,6 +10,8 @@ Design philosophy:
   - Every signal includes exact exit prices — no guessing required
   - Risk management is built in, not optional
   - Output is clean and immediately actionable
+  - Minimum 1:2 reward/risk per Jason Brown's framework
+  - ITM options preferred (delta 0.55-0.80) per Jason Brown
 
 Scoring system (10 points total):
   Regime    0-2  Market direction via QQQ
@@ -20,6 +23,11 @@ Scoring system (10 points total):
 
   Score >= 6  → Signal generated
   Score  < 6  → No signal (wait for better setup)
+
+Planned additions (Phase 1 completion):
+  MACD      0-1  Momentum confirmation
+  Bollinger 0-1  Volatility/support context
+  Earnings  flag  Avoid entries within 14 days of earnings
 """
 
 import warnings
@@ -74,21 +82,21 @@ CONFIG = {
     "regime_ma_short":    50,
     "regime_ma_long":     200,
 
-    # Options selection
+    # Options selection — ITM preference per Jason Brown
     "min_dte":            30,
     "target_dte":         45,
-    "min_delta":          0.35,
-    "max_delta":          0.65,
+    "min_delta":          0.55,        # ITM preferred (delta 0.55-0.80)
+    "max_delta":          0.80,
     "min_option_volume":  50,
     "min_option_oi":      200,
     "max_spread_pct":     25.0,
-    "atm_tolerance":      0.10,
+    "atm_tolerance":      0.15,        # wider tolerance to find ITM strikes
 
     # Exit rules — these are fixed, not suggestions
     "stop_loss_pct":      0.35,        # exit if premium drops 35%
     "profit_target_pct":  0.75,        # exit if premium rises 75%
     "time_stop_dte":      21,          # exit when 21 DTE remains
-    "min_reward_risk":    3.0,         # minimum reward:risk ratio (1:3)
+    "min_reward_risk":    2.0,         # minimum reward:risk ratio (1:2, per Jason Brown)
 }
 
 
@@ -797,12 +805,26 @@ def scan_symbol(symbol: str, regime: dict,
                         )
                         result["spread"]     = short_leg
                         result["spread_siz"] = spread_siz
+
+                        # Check reward/risk on spread
+                        if spread_siz and spread_siz["reward_risk"] < config["min_reward_risk"]:
+                            result["rr_fail"] = spread_siz["reward_risk"]
+                            result["option"]  = None  # disqualify from signals
                     else:
                         result["spread"]     = None
                         result["spread_siz"] = None
                 else:
                     result["spread"]     = None
                     result["spread_siz"] = None
+
+                    # Check reward/risk on single leg
+                    if sizing["contracts"] > 0:
+                        target_gain = round(sizing["target_price"] - option["ask"], 2)
+                        risk        = round(option["ask"] - sizing["stop_price"], 2)
+                        rr          = round(target_gain / risk, 2) if risk > 0 else 0
+                        if rr < config["min_reward_risk"]:
+                            result["rr_fail"] = rr
+                            result["option"]  = None  # disqualify from signals
 
         return result
 
@@ -916,7 +938,6 @@ def print_results(scan: dict):
     if not signals:
         print(f"\n{'─' * W}")
         print("  NO QUALIFYING SETUPS TODAY")
-        print(f"  Nothing scored {config['min_score']}+/10 with available options.")
         print("  Recommendation: Wait. Do not force a trade.")
 
         # Show best scores anyway
@@ -924,13 +945,24 @@ def print_results(scan: dict):
         if top:
             print(f"\n  Best scores today:")
             for r in top:
+                rr_note = f"  ⚠ R/R {r['rr_fail']:.1f}x < {config['min_reward_risk']}x" \
+                          if r.get("rr_fail") else ""
                 print(f"    {r['symbol']:6s}  {r['score']}/10  "
-                      f"({r.get('conviction','—')})  "
-                      f"Trend: {r.get('trend','—')}  RSI: {r.get('rsi','—')}")
+                      f"Trend: {r.get('trend','—'):<10}  "
+                      f"RSI: {r.get('rsi','—')}{rr_note}")
 
-        # Check if any scored but had no option
+        # Reward/risk failures specifically
+        rr_fails = [r for r in scan["all_results"]
+                    if r.get("rr_fail") and not r.get("error")]
+        if rr_fails:
+            print(f"\n  Scored well but failed 1:{config['min_reward_risk']:.0f} reward/risk:")
+            for r in rr_fails[:5]:
+                print(f"    {r['symbol']:6s}  {r['score']}/10  "
+                      f"R/R: {r['rr_fail']:.1f}x — "
+                      f"wait for better entry or lower IV")
+
         if scan["no_option"]:
-            print(f"\n  Signals found but no liquid options available:")
+            print(f"\n  Qualified but no liquid options:")
             for r in scan["no_option"]:
                 print(f"    {r['symbol']:6s}  {r['score']}/10 — no qualifying option")
 
