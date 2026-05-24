@@ -789,6 +789,16 @@ def scan_symbol(symbol: str, regime: dict,
 
         score = scoring["score"]
 
+        # ── Hard disqualifiers (Brown's "don't chase" rules) ──
+        # These override the score — no signal regardless of points earned
+        hard_fail = None
+        if rsi >= config["rsi_overbought"] and pct_ma50 > 10.0:
+            hard_fail = f"Overbought (RSI {rsi:.0f}) AND extended (+{pct_ma50:.1f}% above MA50) — do not chase"
+        elif rsi >= 75:
+            hard_fail = f"RSI {rsi:.0f} — severely overbought, wait for pullback"
+        elif pct_ma50 > 15.0 and trend == "UPTREND":
+            hard_fail = f"+{pct_ma50:.1f}% above MA50 — too extended, wait for reset"
+
         # Return even if below threshold — used for "near misses" display
         result = {
             "symbol":     symbol,
@@ -805,10 +815,15 @@ def scan_symbol(symbol: str, regime: dict,
             "scoring":    scoring,
             "score":      score,
             "conviction": scoring["conviction"],
+            "hard_fail":  hard_fail,
             "option":     None,
             "sizing":     None,
             "error":      None,
         }
+
+        # Hard fails block signal generation entirely
+        if hard_fail:
+            return result
 
         if score >= config["min_score"]:
             option = find_best_call(ticker, price, config)
@@ -977,9 +992,15 @@ def print_results(scan: dict):
                       f"Trend: {r.get('trend','—'):<10}  "
                       f"RSI: {r.get('rsi','—')}{rr_note}")
 
-        # Reward/risk failures specifically
-        rr_fails = [r for r in scan["all_results"]
-                    if r.get("rr_fail") and not r.get("error")]
+        # Hard fail symbols — scored well but disqualified
+        hard_fails = [r for r in scan["all_results"]
+                      if r.get("hard_fail")
+                      and r.get("score", 0) >= config["min_score"]
+                      and not r.get("error")][:5]
+        if hard_fails:
+            print(f"\n  Disqualified (do not chase):")
+            for r in hard_fails:
+                print(f"    {r['symbol']:6s}  {r['score']}/10 — {r['hard_fail']}")
         if rr_fails:
             print(f"\n  Scored well but failed 1:{config['min_reward_risk']:.0f} reward/risk:")
             for r in rr_fails[:5]:
@@ -1107,6 +1128,17 @@ def print_results(scan: dict):
             print(f"    (No position — skip this trade)")
 
         print()
+
+    # ── Hard fails ───────────────────────────────────────────
+    hard_fails = [r for r in scan["all_results"]
+                  if r.get("hard_fail")
+                  and r.get("score", 0) >= config["min_score"]
+                  and not r.get("error")][:5]
+    if hard_fails:
+        print(f"{'─' * W}")
+        print(f"  DISQUALIFIED — do not chase:")
+        for r in hard_fails:
+            print(f"    {r['symbol']:6s}  {r['score']}/10 — {r['hard_fail']}")
 
     # ── Also qualified (cut off by signal cap) ──────────────
     if scan.get("also_qualified"):
