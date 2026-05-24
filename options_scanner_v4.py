@@ -644,12 +644,15 @@ def size_spread(long_ask: float, short_bid: float, long_strike: float,
     else:
         risk_pct = config["risk_pct_min"]
 
-    risk_budget  = account * risk_pct
-    max_by_risk  = int(risk_budget // cost_per_cont) if cost_per_cont > 0 else 0
-    max_by_conc  = int((account * 0.20) // cost_per_cont) if cost_per_cont > 0 else 0
-    contracts    = max(min(max_by_risk, max_by_conc, config["max_positions"]), 0)
+    # Spreads have defined max loss = net debit, so we can be more generous.
+    # Allow up to 15% of account per spread (vs 3-5% for naked calls).
+    spread_max_pct = 0.15
+    max_by_risk    = int((account * spread_max_pct) // cost_per_cont) if cost_per_cont > 0 else 0
+    max_by_conc    = int((account * 0.25) // cost_per_cont) if cost_per_cont > 0 else 0
+    contracts      = max(min(max_by_risk, max_by_conc, config["max_positions"]), 0)
 
-    if contracts == 0 and cost_per_cont <= risk_budget * 2:
+    # Allow 1 contract if net debit fits within 20% of account
+    if contracts == 0 and cost_per_cont <= account * 0.20:
         contracts = 1
 
     total_cost     = round(contracts * cost_per_cont, 2)
@@ -841,31 +844,35 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
     # Sort by score descending
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
 
-    # Split into signals, no_option, and near misses
-    signals     = [r for r in results
-                   if r.get("score", 0) >= config["min_score"]
-                   and r.get("option") is not None][:config["max_signals"]]
+    # Split results into clear categories
+    all_qualified  = [r for r in results
+                      if r.get("score", 0) >= config["min_score"]
+                      and r.get("option") is not None]
 
-    no_option   = [r for r in results
-                   if r.get("score", 0) >= config["min_score"]
-                   and r.get("option") is None]
+    signals        = all_qualified[:config["max_signals"]]
+    also_qualified = all_qualified[config["max_signals"]:]   # scored but cut off by cap
 
-    # Near misses: scored exactly min_score-1, not already in signals or no_option
-    qualified   = set(r["symbol"] for r in signals + no_option)
-    near_misses = [r for r in results
-                   if r.get("score", 0) == config["min_score"] - 1
-                   and r.get("symbol") not in qualified
-                   and not r.get("error")][:5]
+    no_option      = [r for r in results
+                      if r.get("score", 0) >= config["min_score"]
+                      and r.get("option") is None]
+
+    # True near misses: scored exactly min_score - 1
+    qualified_syms = set(r["symbol"] for r in all_qualified + no_option)
+    near_misses    = [r for r in results
+                      if r.get("score", 0) == config["min_score"] - 1
+                      and r.get("symbol") not in qualified_syms
+                      and not r.get("error")][:5]
 
     return {
-        "regime":      regime,
-        "signals":     signals,
-        "near_misses": near_misses,
-        "no_option":   no_option,
-        "all_results": results,
-        "scanned":     len(results),
-        "scan_date":   datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "config":      config,
+        "regime":         regime,
+        "signals":        signals,
+        "also_qualified": also_qualified,
+        "near_misses":    near_misses,
+        "no_option":      no_option,
+        "all_results":    results,
+        "scanned":        len(results),
+        "scan_date":      datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "config":         config,
     }
 
 
@@ -1018,6 +1025,19 @@ def print_results(scan: dict):
             print(f"    (No position — skip this trade)")
 
         print()
+
+    # ── Also qualified (cut off by signal cap) ──────────────
+    if scan.get("also_qualified"):
+        print(f"{'─' * W}")
+        print(f"  ALSO QUALIFIED (scored {config['min_score']}+/10 — "
+              f"cut off by {config['max_signals']}-signal cap):")
+        for r in scan["also_qualified"]:
+            opt = r.get("option")
+            opt_str = f"${opt['strike']:.0f} {opt['expiry']} ask ${opt['ask']:.2f}" \
+                      if opt else "no option"
+            print(f"    {r['symbol']:6s}  {r['score']}/10  "
+                  f"Trend: {r.get('trend','—'):<10}  "
+                  f"RSI: {r.get('rsi','—'):<6}  {opt_str}")
 
     # ── Near misses ─────────────────────────────────────────
     if scan["near_misses"]:
