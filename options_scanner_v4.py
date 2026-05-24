@@ -569,6 +569,114 @@ def size_position(option_ask: float, score: int,
 
 
 # ─────────────────────────────────────────────────────────────
+# DEBIT SPREAD SIZING
+# ─────────────────────────────────────────────────────────────
+
+def find_spread_call(ticker: yf.Ticker, stock_price: float,
+                     long_strike: float, expiry: str, dte: int,
+                     config: dict = CONFIG) -> Optional[dict]:
+    """
+    Find a short call leg to pair with the long call, forming a bull call spread.
+    Targets a strike ~5% above the long strike to balance cost reduction vs profit cap.
+    Returns spread details or None if no suitable short leg found.
+    """
+    try:
+        chain  = ticker.option_chain(expiry)
+        calls  = chain.calls.copy()
+        if calls.empty:
+            return None
+
+        # Filter to strikes above long strike
+        target_short = long_strike * 1.05
+        otm_calls = calls[calls["strike"] > long_strike].copy()
+        if otm_calls.empty:
+            return None
+
+        # Find closest strike to target
+        otm_calls["dist"] = abs(otm_calls["strike"] - target_short)
+        otm_calls = otm_calls.sort_values("dist")
+
+        for _, row in otm_calls.head(5).iterrows():
+            bid = safe_float(row.get("bid"))
+            ask = safe_float(row.get("ask"))
+            if bid is None or ask is None or bid <= 0:
+                continue
+
+            strike     = float(row["strike"])
+            T          = dte / 365.0
+            iv         = safe_float(row.get("impliedVolatility", 0), 0.25)
+            greeks     = black_scholes_greeks(
+                "call", stock_price, strike, T, 0.045, iv if iv > 0 else 0.25
+            )
+
+            return {
+                "strike":    strike,
+                "bid":       round(bid,  2),
+                "ask":       round(ask,  2),
+                "delta":     greeks["delta"],
+                "iv":        round(iv * 100, 1) if iv else None,
+            }
+    except Exception:
+        pass
+    return None
+
+
+def size_spread(long_ask: float, short_bid: float, long_strike: float,
+                short_strike: float, score: int,
+                config: dict = CONFIG) -> Optional[dict]:
+    """
+    Calculate bull call spread position size and exit rules.
+    Net debit = long ask - short bid.
+    Max profit = (short_strike - long_strike) * 100 - net_debit * 100.
+    """
+    net_debit      = round(long_ask - short_bid, 2)
+    if net_debit <= 0:
+        return None
+
+    max_profit_per = round((short_strike - long_strike) - net_debit, 2)
+    cost_per_cont  = net_debit * 100
+    account        = config["account_size"]
+
+    if score >= 8:
+        risk_pct = config["risk_pct_max"]
+    elif score >= 7:
+        risk_pct = (config["risk_pct_min"] + config["risk_pct_max"]) / 2
+    else:
+        risk_pct = config["risk_pct_min"]
+
+    risk_budget  = account * risk_pct
+    max_by_risk  = int(risk_budget // cost_per_cont) if cost_per_cont > 0 else 0
+    max_by_conc  = int((account * 0.20) // cost_per_cont) if cost_per_cont > 0 else 0
+    contracts    = max(min(max_by_risk, max_by_conc, config["max_positions"]), 0)
+
+    if contracts == 0 and cost_per_cont <= risk_budget * 2:
+        contracts = 1
+
+    total_cost     = round(contracts * cost_per_cont, 2)
+    pct_of_account = round(total_cost / account * 100, 1) if account > 0 else 0
+    max_gain       = round(contracts * max_profit_per * 100, 2)
+
+    # Exit rules for spreads:
+    # Stop: exit if spread value drops to 50% of net debit (can't go below 0)
+    # Target: exit at 75% of max profit
+    stop_price   = round(net_debit * 0.50, 2)
+    target_price = round(net_debit + max_profit_per * 0.75, 2)
+
+    return {
+        "contracts":       contracts,
+        "net_debit":       net_debit,
+        "cost_per_cont":   cost_per_cont,
+        "total_cost":      total_cost,
+        "pct_of_account":  pct_of_account,
+        "max_gain":        max_gain,
+        "max_profit_per":  max_profit_per,
+        "risk_pct":        round(risk_pct * 100, 1),
+        "stop_price":      stop_price,
+        "target_price":    target_price,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
 # SINGLE SYMBOL ANALYSIS
 # ─────────────────────────────────────────────────────────────
 
@@ -663,6 +771,27 @@ def scan_symbol(symbol: str, regime: dict,
                 result["option"] = option
                 result["sizing"] = sizing
 
+                # If single leg too expensive, find a spread
+                if sizing["contracts"] == 0:
+                    short_leg = find_spread_call(
+                        ticker, price,
+                        option["strike"], option["expiry"], option["dte"], config
+                    )
+                    if short_leg:
+                        spread_siz = size_spread(
+                            option["ask"], short_leg["bid"],
+                            option["strike"], short_leg["strike"],
+                            score, config
+                        )
+                        result["spread"]     = short_leg
+                        result["spread_siz"] = spread_siz
+                    else:
+                        result["spread"]     = None
+                        result["spread_siz"] = None
+                else:
+                    result["spread"]     = None
+                    result["spread_siz"] = None
+
         return result
 
     except Exception as e:
@@ -712,18 +841,21 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
     # Sort by score descending
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
 
-    # Split into signals and near misses
-    signals    = [r for r in results
-                  if r.get("score", 0) >= config["min_score"]
-                  and r.get("option") is not None][:config["max_signals"]]
-
-    near_misses = [r for r in results
-                   if r.get("score", 0) >= config["min_score"] - 1
-                   and r not in signals][:5]
+    # Split into signals, no_option, and near misses
+    signals     = [r for r in results
+                   if r.get("score", 0) >= config["min_score"]
+                   and r.get("option") is not None][:config["max_signals"]]
 
     no_option   = [r for r in results
                    if r.get("score", 0) >= config["min_score"]
                    and r.get("option") is None]
+
+    # Near misses: scored exactly min_score-1, not already in signals or no_option
+    qualified   = set(r["symbol"] for r in signals + no_option)
+    near_misses = [r for r in results
+                   if r.get("score", 0) == config["min_score"] - 1
+                   and r.get("symbol") not in qualified
+                   and not r.get("error")][:5]
 
     return {
         "regime":      regime,
@@ -830,19 +962,36 @@ def print_results(scan: dict):
               f"Vol: {opt['volume']}  OI: {opt['oi']}")
 
         # Position sizing
+        spr      = r.get("spread")
+        spr_siz  = r.get("spread_siz")
+
         print(f"\n  POSITION (${config['account_size']:,.0f} account):")
         if siz and siz["contracts"] > 0:
+            # Single leg fits
+            print(f"    Type      : Single leg CALL")
             print(f"    Contracts : {siz['contracts']}")
             print(f"    Cost      : ${siz['total_cost']:,.0f}  "
                   f"({siz['pct_of_account']}% of account)")
             if siz["pct_of_account"] > 20:
-                print(f"    ⚠  This is a large allocation — "
-                      f"only take if no other positions open")
+                print(f"    ⚠  Large allocation — only if no other positions open")
+        elif spr and spr_siz and spr_siz["contracts"] > 0:
+            # Suggest bull call spread
+            print(f"    ⚠  Single leg (${opt['ask']:.2f}/contract) too expensive.")
+            print(f"    Recommended: Bull Call Spread")
+            print(f"    Buy  : ${opt['strike']:.0f} CALL @ ${opt['ask']:.2f}")
+            print(f"    Sell : ${spr['strike']:.0f} CALL @ ${spr['bid']:.2f} (bid)")
+            print(f"    Net debit  : ${spr_siz['net_debit']:.2f}/contract  "
+                  f"(${spr_siz['cost_per_cont']:.0f} total per contract)")
+            print(f"    Contracts  : {spr_siz['contracts']}")
+            print(f"    Total cost : ${spr_siz['total_cost']:,.0f}  "
+                  f"({spr_siz['pct_of_account']}% of account)")
+            print(f"    Max gain   : ${spr_siz['max_gain']:,.0f}  "
+                  f"if {sym} reaches ${spr['strike']:.0f} by expiry")
         else:
-            print(f"    ⚠  Premium too high for account size.")
-            print(f"    Consider a debit spread to reduce cost.")
+            print(f"    ⚠  Premium too high even for a spread at this account size.")
+            print(f"    Skip this trade or wait until account grows.")
 
-        # Exit rules — the most important section
+        # Exit rules
         time_stop_date = (
             datetime.strptime(opt["expiry"], "%Y-%m-%d")
             - timedelta(days=config["time_stop_dte"])
@@ -858,8 +1007,15 @@ def print_results(scan: dict):
                   f"(+{int(config['profit_target_pct']*100)}%)")
             print(f"    └─ Time stop     : Exit by {time_stop_date} "
                   f"({config['time_stop_dte']} DTE remaining)")
+        elif spr and spr_siz and spr_siz["contracts"] > 0:
+            print(f"    ┌─ Stop loss     : Close spread if value drops to "
+                  f"${spr_siz['stop_price']:.2f}  (-50% of debit)")
+            print(f"    ├─ Profit target : Close spread if value reaches "
+                  f"${spr_siz['target_price']:.2f}  (+75% of max profit)")
+            print(f"    └─ Time stop     : Close by {time_stop_date} "
+                  f"({config['time_stop_dte']} DTE remaining)")
         else:
-            print(f"    (Size position first)")
+            print(f"    (No position — skip this trade)")
 
         print()
 
@@ -867,11 +1023,19 @@ def print_results(scan: dict):
     if scan["near_misses"]:
         print(f"{'─' * W}")
         print(f"  NEAR MISSES (score {config['min_score']-1}/10 — "
-              f"watch these):")
+              f"one more factor could qualify):")
         for r in scan["near_misses"]:
             print(f"    {r['symbol']:6s}  {r['score']}/10  "
                   f"Trend: {r.get('trend','—'):<10}  "
                   f"RSI: {r.get('rsi', '—')}")
+
+    # ── Signals that scored but had no liquid option ─────────
+    if scan["no_option"]:
+        print(f"{'─' * W}")
+        print(f"  QUALIFIED BUT NO LIQUID OPTION:")
+        for r in scan["no_option"]:
+            print(f"    {r['symbol']:6s}  {r['score']}/10 — "
+                  f"no option met liquidity requirements")
 
     # ── Footer ──────────────────────────────────────────────
     print(f"{'─' * W}")
