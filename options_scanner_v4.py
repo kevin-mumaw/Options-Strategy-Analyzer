@@ -1022,14 +1022,15 @@ def print_results(scan: dict):
             print(f"    Contracts : {siz['contracts']}")
             print(f"    Cost      : ${siz['total_cost']:,.0f}  "
                   f"({siz['pct_of_account']}% of account)")
-            # Single leg: target is 3x the premium paid
+            # Single leg: target is min_reward_risk per Jason Brown
             target_gain = round(siz['target_price'] - opt['ask'], 2)
             rr = round(target_gain / (opt['ask'] - siz['stop_price']), 2)
             print(f"    Reward/Risk: {rr:.1f}x  "
                   f"(risking ${opt['ask'] - siz['stop_price']:.2f} "
                   f"to make ${target_gain:.2f})")
-            if rr < 3.0:
-                print(f"    ⚠  Below 3.0x target — consider tighter stop or higher target")
+            if rr < config["min_reward_risk"]:
+                print(f"    ⚠  Below {config['min_reward_risk']:.1f}x target — "
+                      f"consider tighter stop or higher target")
             if siz["pct_of_account"] > 20:
                 print(f"    ⚠  Large allocation — only if no other positions open")
         elif spr and spr_siz and spr_siz["contracts"] > 0:
@@ -1045,9 +1046,9 @@ def print_results(scan: dict):
                   f"({spr_siz['pct_of_account']}% of account)")
             print(f"    Max gain   : ${spr_siz['max_gain']:,.0f}  "
                   f"| Reward/Risk: {spr_siz['reward_risk']:.1f}x")
-            if spr_siz["reward_risk"] < 3.0:
+            if spr_siz["reward_risk"] < config["min_reward_risk"]:
                 print(f"    ⚠  Poor reward/risk ({spr_siz['reward_risk']:.1f}x) — "
-                      f"target is 3.0x minimum.")
+                      f"target is {config['min_reward_risk']:.1f}x minimum.")
                 print(f"       Consider skipping or waiting for a better setup.")
         else:
             print(f"    ⚠  Premium too high even for a spread at this account size.")
@@ -1107,10 +1108,13 @@ def print_results(scan: dict):
     # ── Signals that scored but had no liquid option ─────────
     if scan["no_option"]:
         print(f"{'─' * W}")
-        print(f"  QUALIFIED BUT NO LIQUID OPTION:")
-        for r in scan["no_option"]:
+        no_opt_display = scan["no_option"][:5]
+        more = len(scan["no_option"]) - 5
+        print(f"  QUALIFIED BUT NO ITM OPTION FOUND"
+              f"{f' (+ {more} more)' if more > 0 else ''}:")
+        for r in no_opt_display:
             print(f"    {r['symbol']:6s}  {r['score']}/10 — "
-                  f"no option met liquidity requirements")
+                  f"no ITM option met delta/liquidity requirements")
 
     # ── Footer ──────────────────────────────────────────────
     print(f"{'─' * W}")
