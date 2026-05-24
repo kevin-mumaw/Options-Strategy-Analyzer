@@ -9,9 +9,11 @@ Design philosophy:
   - If nothing qualifies, say so clearly — no trade is a valid result
   - Every signal includes exact exit prices — no guessing required
   - Risk management is built in, not optional
-  - Output is clean and immediately actionable
-  - Minimum 1:2 reward/risk per Jason Brown's framework
-  - ITM options preferred (delta 0.55-0.80) per Jason Brown
+  - Liquid watchlist of 40 symbols across 4 price tiers
+  - Tier 1 ($10-50): affordable single legs
+  - Tier 2 ($50-150): sweet spot for $2-5k accounts
+  - Tier 3 ($150-400): ATM viable, spreads work well
+  - Tier 4 ($400+): spreads preferred
 
 Scoring system (10 points total):
   Regime    0-2  Market direction via QQQ
@@ -41,16 +43,27 @@ from scipy.stats import norm
 from typing import Optional
 
 # ─────────────────────────────────────────────────────────────
-# WATCHLIST — 25 names with highly liquid options markets
+# WATCHLIST — 40 names across price tiers with liquid options
+#
+# Tier 1 ($10-50):   affordable single legs at $2-5k account
+# Tier 2 ($50-150):  sweet spot for ITM options at $2-5k account
+# Tier 3 ($150-400): ATM viable, spreads preferred
+# Tier 4 ($400+):    spreads only at $2-5k account
 # ─────────────────────────────────────────────────────────────
 WATCHLIST = {
-    "mega_cap_tech": ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA"],
-    "financials":    ["JPM", "GS", "V", "MA", "BAC"],
-    "healthcare":    ["UNH", "LLY", "JNJ"],
-    "consumer":      ["HD", "WMT", "COST"],
-    "etfs":          ["SPY", "QQQ", "XLF", "GLD"],
-    "industrials":   ["CAT", "DE"],
-    "energy":        ["XOM", "CVX"],
+    # Tier 1 — very affordable, high volume ($10-50)
+    "tier1_affordable": ["BAC", "F", "PLTR", "T", "PFE", "AAL", "SOFI"],
+
+    # Tier 2 — sweet spot for this account size ($50-150)
+    "tier2_sweet_spot": ["XLF", "KO", "DIS", "NKE", "UBER", "AMD", "INTC",
+                         "WFC", "C", "MU"],
+
+    # Tier 3 — ATM viable, spreads work well ($150-400)
+    "tier3_mid_price":  ["AAPL", "GOOGL", "JPM", "V", "MA", "XOM", "CVX",
+                         "UNH", "JNJ", "GS"],
+
+    # Tier 4 — spreads preferred ($400+)
+    "tier4_high_price": ["MSFT", "AMZN", "META", "NVDA", "COST", "SPY", "QQQ"],
 }
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
@@ -67,7 +80,7 @@ CONFIG = {
 
     # Signal gate
     "min_score":          6,           # minimum score out of 10
-    "max_signals":        3,           # cap output at top 3 signals
+    "max_signals":        5,           # cap output at top 5 signals
 
     # Technical thresholds
     "rsi_oversold":       35,
@@ -424,9 +437,21 @@ def find_best_call(ticker: yf.Ticker, stock_price: float,
                    config: dict = CONFIG) -> Optional[dict]:
     """
     Find the best available CALL option meeting liquidity and DTE criteria.
-    Targets near-ATM strikes with 30-60 DTE.
-    Returns a dict with all option details, or None if nothing qualifies.
+    Delta range is adaptive by stock price per Jason Brown's ITM preference:
+      Under $100  : delta 0.55-0.80 (ITM preferred)
+      $100-$300   : delta 0.50-0.70 (slight ITM bias)
+      Over $300   : delta 0.40-0.65 (ATM, best liquidity)
     """
+    # Adaptive delta range based on stock price
+    if stock_price < 100:
+        min_delta = 0.55
+        max_delta = 0.80
+    elif stock_price < 300:
+        min_delta = 0.50
+        max_delta = 0.70
+    else:
+        min_delta = 0.40
+        max_delta = 0.65
     try:
         today = datetime.today().date()
         expirations = ticker.options
@@ -501,10 +526,10 @@ def find_best_call(ticker: yf.Ticker, stock_price: float,
                 "call", stock_price, strike, T, 0.045, iv if iv > 0 else 0.25
             )
 
-            # Skip if delta out of range
+            # Skip if delta out of range (uses adaptive range set above)
             delta = greeks.get("delta", 0.5)
             if not np.isnan(delta):
-                if delta < config["min_delta"] or delta > config["max_delta"]:
+                if delta < min_delta or delta > max_delta:
                     continue
 
             return {
@@ -522,6 +547,7 @@ def find_best_call(ticker: yf.Ticker, stock_price: float,
                 "gamma":      greeks["gamma"],
                 "theta":      greeks["theta"],
                 "vega":       greeks["vega"],
+                "delta_tier": f"{min_delta:.2f}-{max_delta:.2f}",
             }
 
     except Exception:
