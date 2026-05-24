@@ -88,6 +88,7 @@ CONFIG = {
     "stop_loss_pct":      0.35,        # exit if premium drops 35%
     "profit_target_pct":  0.75,        # exit if premium rises 75%
     "time_stop_dte":      21,          # exit when 21 DTE remains
+    "min_reward_risk":    3.0,         # minimum reward:risk ratio (1:3)
 }
 
 
@@ -858,7 +859,9 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
                       and r.get("option") is not None]
 
     signals        = all_qualified[:config["max_signals"]]
-    also_qualified = all_qualified[config["max_signals"]:]   # scored but cut off by cap
+    # Also qualified: scored but cut off by signal cap, exclude overbought
+    also_qualified = [r for r in all_qualified[config["max_signals"]:]
+                      if r.get("rsi", 0) < config["rsi_overbought"]][:5]
 
     no_option      = [r for r in results
                       if r.get("score", 0) >= config["min_score"]
@@ -987,6 +990,14 @@ def print_results(scan: dict):
             print(f"    Contracts : {siz['contracts']}")
             print(f"    Cost      : ${siz['total_cost']:,.0f}  "
                   f"({siz['pct_of_account']}% of account)")
+            # Single leg: target is 3x the premium paid
+            target_gain = round(siz['target_price'] - opt['ask'], 2)
+            rr = round(target_gain / (opt['ask'] - siz['stop_price']), 2)
+            print(f"    Reward/Risk: {rr:.1f}x  "
+                  f"(risking ${opt['ask'] - siz['stop_price']:.2f} "
+                  f"to make ${target_gain:.2f})")
+            if rr < 3.0:
+                print(f"    ⚠  Below 3.0x target — consider tighter stop or higher target")
             if siz["pct_of_account"] > 20:
                 print(f"    ⚠  Large allocation — only if no other positions open")
         elif spr and spr_siz and spr_siz["contracts"] > 0:
@@ -1002,6 +1013,10 @@ def print_results(scan: dict):
                   f"({spr_siz['pct_of_account']}% of account)")
             print(f"    Max gain   : ${spr_siz['max_gain']:,.0f}  "
                   f"| Reward/Risk: {spr_siz['reward_risk']:.1f}x")
+            if spr_siz["reward_risk"] < 3.0:
+                print(f"    ⚠  Poor reward/risk ({spr_siz['reward_risk']:.1f}x) — "
+                      f"target is 3.0x minimum.")
+                print(f"       Consider skipping or waiting for a better setup.")
         else:
             print(f"    ⚠  Premium too high even for a spread at this account size.")
             print(f"    Skip this trade or wait until account grows.")
