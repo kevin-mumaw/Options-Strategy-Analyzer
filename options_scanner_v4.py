@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.12"
+VERSION = "4.13"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -222,7 +222,7 @@ def analyze_bollinger(series: pd.Series,
         if pct_b <= 0.20:
             signal  = "NEAR_LOWER"
             bullish = True    # near lower band = oversold bounce opportunity
-        elif pct_b >= 0.80:
+        elif pct_b >= 0.75:
             signal  = "NEAR_UPPER"
             bullish = False   # near upper band = extended
         else:
@@ -866,11 +866,7 @@ def size_spread(long_ask: float, short_bid: float, long_strike: float,
 def check_earnings(ticker: yf.Ticker, warn_days: int = 14) -> dict:
     """
     Check if earnings are within warn_days of today.
-    Returns dict with:
-      has_earnings: bool — earnings found within window
-      days_to_earnings: int or None
-      earnings_date: str or None
-      warning: str — display message
+    ETFs and funds have no earnings — handled silently.
     """
     result = {
         "has_earnings":      False,
@@ -879,7 +875,16 @@ def check_earnings(ticker: yf.Ticker, warn_days: int = 14) -> dict:
         "warning":           None,
     }
     try:
+        import logging
+        # Suppress yfinance 404 errors for ETFs
+        yf_logger = logging.getLogger("yfinance")
+        prev_level = yf_logger.level
+        yf_logger.setLevel(logging.CRITICAL)
+
         cal = ticker.calendar
+
+        yf_logger.setLevel(prev_level)
+
         if cal is None:
             return result
 
