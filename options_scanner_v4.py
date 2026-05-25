@@ -68,6 +68,8 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
+VERSION = "4.8-debug"
+
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────
@@ -550,8 +552,8 @@ def find_best_call(ticker: yf.Ticker, stock_price: float,
                 "delta_tier": f"{min_delta:.2f}-{max_delta:.2f}",
             }
 
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [find_best_call error — {type(e).__name__}: {e}]")
     return None
 
 
@@ -964,7 +966,7 @@ def print_results(scan: dict):
 
     # ── Header ──────────────────────────────────────────────
     print("\n" + "█" * W)
-    print(f"  OPTIONS SCANNER — Phase 1  |  {scan['scan_date']}")
+    print(f"  OPTIONS SCANNER — Phase 1  v{VERSION}  |  {scan['scan_date']}")
     print(f"  Account: ${config['account_size']:,.0f}  |  "
           f"Scanned: {scan['scanned']} symbols")
     print("█" * W)
