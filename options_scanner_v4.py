@@ -68,7 +68,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.10"
+VERSION = "4.11"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -112,6 +112,7 @@ CONFIG = {
     "profit_target_pct":  0.75,        # exit if premium rises 75%
     "time_stop_dte":      21,          # exit when 21 DTE remains
     "min_reward_risk":    2.0,         # minimum reward:risk ratio (1:2, per Jason Brown)
+    "earnings_warn_days": 14,          # flag if earnings within 14 days
 }
 
 
@@ -728,6 +729,101 @@ def size_spread(long_ask: float, short_bid: float, long_strike: float,
 
 
 # ─────────────────────────────────────────────────────────────
+# EARNINGS CHECK
+# ─────────────────────────────────────────────────────────────
+
+def check_earnings(ticker: yf.Ticker, warn_days: int = 14) -> dict:
+    """
+    Check if earnings are within warn_days of today.
+    Returns dict with:
+      has_earnings: bool — earnings found within window
+      days_to_earnings: int or None
+      earnings_date: str or None
+      warning: str — display message
+    """
+    result = {
+        "has_earnings":      False,
+        "days_to_earnings":  None,
+        "earnings_date":     None,
+        "warning":           None,
+    }
+    try:
+        cal = ticker.calendar
+        if cal is None:
+            return result
+
+        # yfinance returns calendar as dict or DataFrame depending on version
+        if isinstance(cal, dict):
+            dates = cal.get("Earnings Date", [])
+            if not dates:
+                return result
+            # Take first upcoming date
+            today = datetime.today().date()
+            for d in dates:
+                try:
+                    if hasattr(d, "date"):
+                        ed = d.date()
+                    else:
+                        ed = datetime.strptime(str(d)[:10], "%Y-%m-%d").date()
+                    days = (ed - today).days
+                    if 0 <= days <= warn_days:
+                        result.update({
+                            "has_earnings":     True,
+                            "days_to_earnings": days,
+                            "earnings_date":    str(ed),
+                            "warning": f"⚠ Earnings in {days} day{'s' if days != 1 else ''} ({ed}) — avoid new entries",
+                        })
+                        return result
+                    elif days > warn_days:
+                        # Store for informational display even if outside window
+                        result.update({
+                            "has_earnings":     False,
+                            "days_to_earnings": days,
+                            "earnings_date":    str(ed),
+                            "warning":          None,
+                        })
+                        return result
+                except Exception:
+                    continue
+
+        elif hasattr(cal, "loc"):
+            # DataFrame format
+            if "Earnings Date" in cal.index:
+                raw = cal.loc["Earnings Date"]
+                dates = raw.values if hasattr(raw, "values") else [raw]
+                today = datetime.today().date()
+                for d in dates:
+                    try:
+                        if hasattr(d, "date"):
+                            ed = d.date()
+                        else:
+                            ed = datetime.strptime(str(d)[:10], "%Y-%m-%d").date()
+                        days = (ed - today).days
+                        if 0 <= days <= warn_days:
+                            result.update({
+                                "has_earnings":     True,
+                                "days_to_earnings": days,
+                                "earnings_date":    str(ed),
+                                "warning": f"⚠ Earnings in {days} day{'s' if days != 1 else ''} ({ed}) — avoid new entries",
+                            })
+                            return result
+                        elif days > warn_days:
+                            result.update({
+                                "has_earnings":     False,
+                                "days_to_earnings": days,
+                                "earnings_date":    str(ed),
+                                "warning":          None,
+                            })
+                            return result
+                    except Exception:
+                        continue
+
+    except Exception:
+        pass
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
 # SINGLE SYMBOL ANALYSIS
 # ─────────────────────────────────────────────────────────────
 
@@ -772,6 +868,9 @@ def scan_symbol(symbol: str, regime: dict,
         # Weekly trend
         weekly = analyze_weekly(ticker)
 
+        # Earnings check
+        earnings = check_earnings(ticker, config["earnings_warn_days"])
+
         # Score
         scoring = score_call_setup(
             regime      = regime["regime"],
@@ -803,6 +902,8 @@ def scan_symbol(symbol: str, regime: dict,
             hard_fail = f"RSI {rsi:.0f} — severely overbought, wait for pullback"
         elif pct_ma50 > 15.0 and trend == "UPTREND":
             hard_fail = f"+{pct_ma50:.1f}% above MA50 — too extended, wait for reset"
+        elif earnings["has_earnings"]:
+            hard_fail = earnings["warning"]
 
         # Return even if below threshold — used for "near misses" display
         result = {
@@ -817,6 +918,7 @@ def scan_symbol(symbol: str, regime: dict,
             "hv":         hv,
             "vol_data":   vol_data,
             "weekly":     weekly,
+            "earnings":   earnings,
             "scoring":    scoring,
             "score":      score,
             "conviction": scoring["conviction"],
@@ -1062,6 +1164,16 @@ def print_results(scan: dict):
               f"MA50: ${r['ma50']:.2f} ({r['pct_ma50']:+.1f}%)")
         print(f"    HV30:  {r['hv']}%   "
               f"Weekly: {r['weekly']['trend']}")
+
+        # Earnings info
+        earn = r.get("earnings", {})
+        if earn.get("earnings_date"):
+            days = earn.get("days_to_earnings")
+            ed   = earn.get("earnings_date")
+            if earn.get("has_earnings"):
+                print(f"    ⚠ EARNINGS: {ed} ({days} days) — signal blocked by hard filter")
+            else:
+                print(f"    Earnings:  {ed} ({days} days away — outside {config['earnings_warn_days']}-day window)")
 
         # Option
         print(f"\n  OPTION:")
