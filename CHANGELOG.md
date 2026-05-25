@@ -1,6 +1,24 @@
 # Changelog
 All notable changes to the Options Strategy Analyzer project.
 
+## [4.10.0] - 2026-05-25
+### Fixed
+- Options now correctly target July 17 monthly expiration over July 2 weekly (target_dte raised from 45 to 52)
+- Separated "no option found" from "option found but failed reward/risk" in output
+- Reward/risk failures now show actual R/R ratio with actionable message
+- Removed silent exception swallowing in find_best_call
+- Fixed volume NaN handling in option loop
+
+### Added
+- VERSION constant displayed in scan header — always know what code ran
+- DISQUALIFIED section for overbought/extended stocks
+- OPTION FOUND — FAILED R/R section showing exact R/R for watch candidates
+- Adaptive delta range by stock price tier (ITM for <$100, near-ATM for $300+)
+- Hard disqualifiers: RSI ≥75, overbought+extended, price >15% above MA50
+- Expanded watchlist to 34 symbols across 4 price tiers
+- Reward/risk minimum set to 1:2 per Jason Brown's framework
+- ITM options preferred per Jason Brown (delta 0.55-0.80 on lower-priced stocks)
+  
 ## [4.0.0] - 2026-05-24
 ### Added — Phase 1 Scanner Rebuild (options_scanner_v4.py)
 - Complete rewrite as importable Python module
