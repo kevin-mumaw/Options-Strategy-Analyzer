@@ -68,7 +68,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.9-debug"
+VERSION = "4.10"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -511,12 +511,10 @@ def find_best_call(ticker: yf.Ticker, stock_price: float,
             ask        = safe_float(row["ask"])
             bid        = safe_float(row["bid"])
             if ask is None or bid is None or ask == 0:
-                print(f"    [debug] ${row['strike']:.0f} skipped: ask/bid invalid")
                 continue
 
             spread_pct = (ask - bid) / ask * 100
             if spread_pct > config["max_spread_pct"]:
-                print(f"    [debug] ${row['strike']:.0f} skipped: spread {spread_pct:.1f}%")
                 continue
 
             iv     = safe_float(row.get("impliedVolatility", 0), 0)
@@ -535,13 +533,9 @@ def find_best_call(ticker: yf.Ticker, stock_price: float,
             delta = greeks.get("delta", 0.5)
             if not np.isnan(delta):
                 if delta < min_delta or delta > max_delta:
-                    print(f"    [debug] ${strike:.0f} skipped: delta {delta:.3f} not in [{min_delta},{max_delta}]")
                     continue
             else:
-                print(f"    [debug] ${strike:.0f} skipped: delta is NaN")
                 continue
-
-            print(f"    [debug] ${strike:.0f} RETURNING — delta {delta:.3f} spread {spread_pct:.1f}%")
 
             return {
                 "expiry":     best_exp,
@@ -832,6 +826,8 @@ def scan_symbol(symbol: str, regime: dict,
             "error":      None,
         }
 
+        result["found_option"] = False  # tracks if option was found before R/R check
+
         # Hard fails block signal generation entirely
         if hard_fail:
             return result
@@ -839,6 +835,7 @@ def scan_symbol(symbol: str, regime: dict,
         if score >= config["min_score"]:
             option = find_best_call(ticker, price, config)
             if option:
+                result["found_option"] = True  # option exists, may be cleared by R/R
                 sizing = size_position(option["ask"], score, config)
                 result["option"] = option
                 result["sizing"] = sizing
@@ -939,7 +936,15 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
 
     no_option      = [r for r in results
                       if r.get("score", 0) >= config["min_score"]
-                      and r.get("option") is None]
+                      and r.get("option") is None
+                      and not r.get("found_option")
+                      and not r.get("hard_fail")]
+
+    rr_disqualified = [r for r in results
+                       if r.get("score", 0) >= config["min_score"]
+                       and r.get("option") is None
+                       and r.get("found_option")
+                       and not r.get("hard_fail")]
 
     # True near misses: scored exactly min_score - 1
     qualified_syms = set(r["symbol"] for r in all_qualified + no_option)
@@ -949,15 +954,16 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
                       and not r.get("error")][:5]
 
     return {
-        "regime":         regime,
-        "signals":        signals,
-        "also_qualified": also_qualified,
-        "near_misses":    near_misses,
-        "no_option":      no_option,
-        "all_results":    results,
-        "scanned":        len(results),
-        "scan_date":      datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "config":         config,
+        "regime":           regime,
+        "signals":          signals,
+        "also_qualified":   also_qualified,
+        "near_misses":      near_misses,
+        "no_option":        no_option,
+        "rr_disqualified":  rr_disqualified,
+        "all_results":      results,
+        "scanned":          len(results),
+        "scan_date":        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "config":           config,
     }
 
 
@@ -1174,16 +1180,28 @@ def print_results(scan: dict):
                   f"Trend: {r.get('trend','—'):<10}  "
                   f"RSI: {r.get('rsi', '—')}")
 
+    # ── R/R disqualified — found option but failed 1:2 ──────
+    if scan.get("rr_disqualified"):
+        print(f"{'─' * W}")
+        rr_disp = scan["rr_disqualified"][:5]
+        more    = len(scan["rr_disqualified"]) - 5
+        print(f"  OPTION FOUND — FAILED {config['min_reward_risk']:.0f}:1 REWARD/RISK"
+              f"{f' (+ {more} more)' if more > 0 else ''}:")
+        for r in rr_disp:
+            rr = r.get("rr_fail", "?")
+            print(f"    {r['symbol']:6s}  {r['score']}/10  "
+                  f"R/R: {rr:.1f}x — wait for pullback or lower IV")
+
     # ── Signals that scored but had no liquid option ─────────
     if scan["no_option"]:
         print(f"{'─' * W}")
         no_opt_display = scan["no_option"][:5]
         more = len(scan["no_option"]) - 5
-        print(f"  QUALIFIED BUT NO ITM OPTION FOUND"
+        print(f"  NO QUALIFYING OPTION FOUND"
               f"{f' (+ {more} more)' if more > 0 else ''}:")
         for r in no_opt_display:
             print(f"    {r['symbol']:6s}  {r['score']}/10 — "
-                  f"no ITM option met delta/liquidity requirements")
+                  f"no option met delta/liquidity requirements")
 
     # ── Footer ──────────────────────────────────────────────
     print(f"{'─' * W}")
