@@ -1,5 +1,5 @@
 """
-options_scanner_v4.14.py
+options_scanner_v4.py
 =====================
 Phase 1 — CALL-side scanner with quality scoring gate.
 Aligned with Jason Brown's PTU trading principles.
@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.13"
+VERSION = "4.14"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -1199,6 +1199,14 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
                       and r.get("symbol") not in qualified_syms
                       and not r.get("error")][:5]
 
+    try:
+        from datetime import timezone as dt_timezone
+        import pytz
+        et = pytz.timezone("US/Eastern")
+        scan_date = datetime.now(dt_timezone.utc).astimezone(et).strftime("%Y-%m-%d %H:%M ET")
+    except Exception:
+        scan_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+
     return {
         "regime":           regime,
         "signals":          signals,
@@ -1208,7 +1216,7 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
         "rr_disqualified":  rr_disqualified,
         "all_results":      results,
         "scanned":          len(results),
-        "scan_date":        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "scan_date":        scan_date,
         "config":           config,
     }
 
@@ -1237,6 +1245,28 @@ def print_results(scan: dict):
     icon = regime_icons.get(regime["regime"], "⚪")
     print(f"\n  MARKET REGIME: {icon} {regime['regime']}")
     print(f"  {regime['detail']}")
+
+    # ── Plain English market read ────────────────────────────
+    r_name   = regime["regime"]
+    pct_ma50 = regime.get("pct_ma50", 0) or 0
+
+    if r_name == "BULLISH":
+        if pct_ma50 > 15:
+            summary = "Market significantly extended — wait for pullback before new entries"
+        elif pct_ma50 > 10:
+            summary = "Market extended above MA50 — proceed only with highest conviction setups"
+        elif pct_ma50 > 5:
+            summary = "Market healthy and trending — proceed with qualifying setups"
+        else:
+            summary = "Market near MA50 support — good entry conditions if setups qualify"
+    elif r_name == "MIXED":
+        summary = "Market transitional — raise the bar, use smaller size, avoid marginal setups"
+    elif r_name == "BEARISH":
+        summary = "Market in downtrend — avoid new CALL entries, protect capital"
+    else:
+        summary = "Market direction unclear — wait for confirmation"
+
+    print(f"\n  📋 {summary}")
 
     # ── No signals ──────────────────────────────────────────
     if not signals:
