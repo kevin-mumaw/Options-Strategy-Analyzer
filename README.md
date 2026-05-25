@@ -6,7 +6,7 @@ A Google Colab-based options strategy research notebook for identifying and vali
 
 ## Project Status
 
-- **Current Development Version:** v3.4
+- **Current Development Version:** v4.13
 - **Status:** Active development and validation
 - **Platform:** Google Colab
 - **Language:** Python
