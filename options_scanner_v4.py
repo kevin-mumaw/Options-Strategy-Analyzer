@@ -68,7 +68,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.8-debug"
+VERSION = "4.9-debug"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -511,15 +511,18 @@ def find_best_call(ticker: yf.Ticker, stock_price: float,
             ask        = safe_float(row["ask"])
             bid        = safe_float(row["bid"])
             if ask is None or bid is None or ask == 0:
+                print(f"    [debug] ${row['strike']:.0f} skipped: ask/bid invalid")
                 continue
 
             spread_pct = (ask - bid) / ask * 100
             if spread_pct > config["max_spread_pct"]:
+                print(f"    [debug] ${row['strike']:.0f} skipped: spread {spread_pct:.1f}%")
                 continue
 
             iv     = safe_float(row.get("impliedVolatility", 0), 0)
             oi     = int(row.get("openInterest", 0) or 0)
-            vol    = int(row.get("volume", 0) or 0)
+            vol    = float(row.get("volume", 0) or 0)
+            vol    = int(vol) if not np.isnan(vol) else 0
             strike = float(row["strike"])
             mid    = round((bid + ask) / 2, 2)
             T      = best_dte / 365.0
@@ -532,7 +535,13 @@ def find_best_call(ticker: yf.Ticker, stock_price: float,
             delta = greeks.get("delta", 0.5)
             if not np.isnan(delta):
                 if delta < min_delta or delta > max_delta:
+                    print(f"    [debug] ${strike:.0f} skipped: delta {delta:.3f} not in [{min_delta},{max_delta}]")
                     continue
+            else:
+                print(f"    [debug] ${strike:.0f} skipped: delta is NaN")
+                continue
+
+            print(f"    [debug] ${strike:.0f} RETURNING — delta {delta:.3f} spread {spread_pct:.1f}%")
 
             return {
                 "expiry":     best_exp,
