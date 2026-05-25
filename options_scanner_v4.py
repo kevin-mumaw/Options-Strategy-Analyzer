@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.14"
+VERSION = "4.15"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -1523,8 +1523,220 @@ def deep_dive(symbol: str, config: dict = CONFIG):
 
 
 # ─────────────────────────────────────────────────────────────
-# ENTRY POINT
+# TRADE JOURNAL
 # ─────────────────────────────────────────────────────────────
+
+JOURNAL_FILE = "trade_journal.csv"
+
+JOURNAL_COLUMNS = [
+    "trade_id", "entry_date", "symbol", "direction", "trade_type",
+    "score", "conviction", "market_regime",
+    "entry_premium", "stop_price", "target_price", "time_stop_date",
+    "contracts", "total_cost",
+    "exit_date", "exit_premium", "exit_reason",
+    "pnl_dollars", "pnl_pct", "status", "notes"
+]
+
+
+def log_entry(symbol: str, direction: str, trade_type: str,
+              score: int, conviction: str, market_regime: str,
+              entry_premium: float, stop_price: float,
+              target_price: float, time_stop_date: str,
+              contracts: int, total_cost: float,
+              notes: str = "", config: dict = CONFIG) -> str:
+    """
+    Log a new trade entry to the journal.
+
+    Args:
+        symbol:          Ticker e.g. 'BAC'
+        direction:       'BUY CALL' or 'BUY PUT'
+        trade_type:      'SINGLE LEG' or 'SPREAD'
+        score:           Scanner score at entry (e.g. 7)
+        conviction:      'MODERATE', 'HIGH', 'VERY HIGH'
+        market_regime:   'BULLISH', 'MIXED', 'BEARISH'
+        entry_premium:   Premium paid per contract (e.g. 3.35)
+        stop_price:      Stop loss price (e.g. 2.18)
+        target_price:    Profit target price (e.g. 5.86)
+        time_stop_date:  Date to exit regardless (e.g. '2026-06-26')
+        contracts:       Number of contracts
+        total_cost:      Total dollars spent
+        notes:           Any additional notes
+
+    Returns:
+        trade_id string
+    """
+    import os, csv
+    from datetime import timezone as dt_timezone
+
+    try:
+        import pytz
+        et = pytz.timezone("US/Eastern")
+        entry_date = datetime.now(dt_timezone.utc).astimezone(et).strftime("%Y-%m-%d %H:%M ET")
+    except Exception:
+        entry_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    trade_id = f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M')}"
+
+    row = {
+        "trade_id":        trade_id,
+        "entry_date":      entry_date,
+        "symbol":          symbol.upper(),
+        "direction":       direction,
+        "trade_type":      trade_type,
+        "score":           score,
+        "conviction":      conviction,
+        "market_regime":   market_regime,
+        "entry_premium":   entry_premium,
+        "stop_price":      stop_price,
+        "target_price":    target_price,
+        "time_stop_date":  time_stop_date,
+        "contracts":       contracts,
+        "total_cost":      total_cost,
+        "exit_date":       "",
+        "exit_premium":    "",
+        "exit_reason":     "",
+        "pnl_dollars":     "",
+        "pnl_pct":         "",
+        "status":          "OPEN",
+        "notes":           notes,
+    }
+
+    file_exists = os.path.isfile(JOURNAL_FILE)
+    with open(JOURNAL_FILE, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=JOURNAL_COLUMNS)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+    print(f"\n  ✓ Trade logged: {trade_id}")
+    print(f"    {symbol} {direction} | Entry: ${entry_premium:.2f} | "
+          f"Stop: ${stop_price:.2f} | Target: ${target_price:.2f}")
+    print(f"    Contracts: {contracts} | Cost: ${total_cost:.0f} | "
+          f"Time stop: {time_stop_date}")
+    return trade_id
+
+
+def log_exit(trade_id: str, exit_premium: float,
+             exit_reason: str, notes: str = "") -> None:
+    """
+    Update an open trade with exit details and calculate P&L.
+
+    Args:
+        trade_id:      The ID returned by log_entry (e.g. 'BAC-202605270945')
+        exit_premium:  Premium received when closing (e.g. 5.20)
+        exit_reason:   'STOP LOSS', 'PROFIT TARGET', 'TIME STOP', 'MANUAL'
+        notes:         Any notes about the exit
+    """
+    import os, csv
+    from datetime import timezone as dt_timezone
+
+    if not os.path.isfile(JOURNAL_FILE):
+        print("  ⚠ No journal file found.")
+        return
+
+    try:
+        import pytz
+        et = pytz.timezone("US/Eastern")
+        exit_date = datetime.now(dt_timezone.utc).astimezone(et).strftime("%Y-%m-%d %H:%M ET")
+    except Exception:
+        exit_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    rows = []
+    updated = False
+
+    with open(JOURNAL_FILE, "r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row["trade_id"] == trade_id and row["status"] == "OPEN":
+                entry_premium = float(row["entry_premium"])
+                contracts     = int(row["contracts"])
+                pnl_per_cont  = (exit_premium - entry_premium) * 100
+                pnl_dollars   = round(pnl_per_cont * contracts, 2)
+                pnl_pct       = round((exit_premium - entry_premium) / entry_premium * 100, 1)
+                outcome       = "WIN" if pnl_dollars > 0 else "LOSS"
+
+                row["exit_date"]    = exit_date
+                row["exit_premium"] = exit_premium
+                row["exit_reason"]  = exit_reason
+                row["pnl_dollars"]  = pnl_dollars
+                row["pnl_pct"]      = pnl_pct
+                row["status"]       = outcome
+                row["notes"]        = notes if notes else row["notes"]
+                updated = True
+
+                print(f"\n  ✓ Trade closed: {trade_id}")
+                print(f"    Exit: ${exit_premium:.2f} | Reason: {exit_reason}")
+                print(f"    P&L: ${pnl_dollars:+.2f} ({pnl_pct:+.1f}%) — {outcome}")
+
+            rows.append(row)
+
+    if not updated:
+        print(f"  ⚠ Trade ID '{trade_id}' not found or already closed.")
+        return
+
+    with open(JOURNAL_FILE, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=JOURNAL_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def show_journal(status: str = "ALL") -> None:
+    """
+    Display trade journal. status: 'ALL', 'OPEN', 'WIN', 'LOSS'
+    """
+    import os, csv
+
+    if not os.path.isfile(JOURNAL_FILE):
+        print("  No trades logged yet.")
+        return
+
+    rows = []
+    with open(JOURNAL_FILE, "r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if status == "ALL" or row["status"] == status:
+                rows.append(row)
+
+    if not rows:
+        print(f"  No {status.lower()} trades found.")
+        return
+
+    W = 62
+    print(f"\n{'─' * W}")
+    print(f"  TRADE JOURNAL  |  {len(rows)} trade(s)  |  Filter: {status}")
+    print(f"{'─' * W}")
+
+    wins   = sum(1 for r in rows if r["status"] == "WIN")
+    losses = sum(1 for r in rows if r["status"] == "LOSS")
+    open_t = sum(1 for r in rows if r["status"] == "OPEN")
+    closed = [r for r in rows if r["status"] in ("WIN", "LOSS")]
+
+    total_pnl = sum(float(r["pnl_dollars"]) for r in closed if r["pnl_dollars"])
+    win_rate  = round(wins / len(closed) * 100, 1) if closed else 0
+
+    print(f"  Open: {open_t}  |  Wins: {wins}  |  Losses: {losses}  |  "
+          f"Win rate: {win_rate}%  |  Total P&L: ${total_pnl:+.2f}")
+    print(f"{'─' * W}")
+
+    for r in rows:
+        status_icon = {"OPEN": "🔵", "WIN": "🟢", "LOSS": "🔴"}.get(r["status"], "⚪")
+        pnl_str = f"  P&L: ${float(r['pnl_dollars']):+.2f}" if r["pnl_dollars"] else ""
+        print(f"\n  {status_icon} {r['trade_id']}")
+        print(f"    {r['symbol']} {r['direction']} | Score: {r['score']}/12 | "
+              f"{r['conviction']}")
+        print(f"    Entry: ${r['entry_premium']} × {r['contracts']} contracts "
+              f"= ${r['total_cost']} | {r['entry_date']}")
+        if r["exit_date"]:
+            print(f"    Exit:  ${r['exit_premium']} | {r['exit_reason']} | "
+                  f"{r['exit_date']}{pnl_str}")
+        else:
+            print(f"    Stop: ${r['stop_price']} | Target: ${r['target_price']} | "
+                  f"Time stop: {r['time_stop_date']}")
+        if r["notes"]:
+            print(f"    Notes: {r['notes']}")
+
+    print(f"\n{'─' * W}\n")
+
 
 if __name__ == "__main__":
     results = run_scan()
