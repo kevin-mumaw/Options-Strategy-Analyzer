@@ -97,7 +97,7 @@ CONFIG = {
 
     # Options selection — ITM preference per Jason Brown
     "min_dte":            30,
-    "target_dte":         45,
+    "target_dte":         52,         # targets ~July 17 monthly over weeklies like July 2
     "min_delta":          0.55,        # ITM preferred (delta 0.55-0.80)
     "max_delta":          0.80,
     "min_option_volume":  50,
