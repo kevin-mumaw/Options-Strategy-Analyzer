@@ -15,13 +15,15 @@ Design philosophy:
   - Tier 3 ($150-400): ATM viable, spreads work well
   - Tier 4 ($400+): spreads preferred
 
-Scoring system (10 points total):
+Scoring system (12 points total):
   Regime    0-2  Market direction via QQQ
   RSI       0-2  Momentum positioning
   Trend     0-2  Price structure vs moving averages
   Volume    0-2  Institutional activity
   Weekly    0-1  Multi-timeframe confirmation
   Support   0-1  Entry quality relative to key levels
+  MACD      0-1  Momentum confirmation (Jason Brown)
+  Bollinger 0-1  Volatility/support context (Jason Brown)
 
   Score >= 6  → Signal generated
   Score  < 6  → No signal (wait for better setup)
@@ -68,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.11"
+VERSION = "4.12"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -148,6 +150,96 @@ def safe_float(val, default=None) -> Optional[float]:
         return v if not np.isnan(v) else default
     except (TypeError, ValueError):
         return default
+
+
+def compute_macd(series: pd.Series,
+                 fast: int = 12, slow: int = 26,
+                 signal: int = 9) -> dict:
+    """
+    Compute MACD line, signal line, and histogram.
+    Returns dict with macd, signal, histogram, and bullish flag.
+    """
+    result = {"macd": None, "signal": None, "histogram": None, "bullish": False}
+    try:
+        if len(series) < slow + signal + 5:
+            return result
+        ema_fast = series.ewm(span=fast, adjust=False).mean()
+        ema_slow = series.ewm(span=slow, adjust=False).mean()
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+        histogram = macd_line - signal_line
+
+        m = round(float(macd_line.iloc[-1]), 4)
+        s = round(float(signal_line.iloc[-1]), 4)
+        h = round(float(histogram.iloc[-1]), 4)
+
+        result.update({
+            "macd":      m,
+            "signal":    s,
+            "histogram": h,
+            "bullish":   m > s,   # MACD above signal = bullish momentum
+        })
+    except Exception:
+        pass
+    return result
+
+
+def analyze_bollinger(series: pd.Series,
+                      window: int = 20, num_std: float = 2.0) -> dict:
+    """
+    Compute Bollinger Bands and classify price position.
+    Returns dict with upper, middle, lower bands and signal.
+
+    Signals:
+      NEAR_LOWER  — price near or below lower band (oversold, potential bounce)
+      NEAR_UPPER  — price near or above upper band (overbought, potential reversal)
+      MIDDLE      — price between bands (neutral)
+    """
+    result = {
+        "upper": None, "middle": None, "lower": None,
+        "pct_b": None, "signal": "UNKNOWN", "bullish": False
+    }
+    try:
+        if len(series) < window + 5:
+            return result
+
+        middle = series.rolling(window).mean()
+        std    = series.rolling(window).std()
+        upper  = middle + (std * num_std)
+        lower  = middle - (std * num_std)
+
+        price  = float(series.iloc[-1])
+        mid    = float(middle.iloc[-1])
+        up     = float(upper.iloc[-1])
+        lo     = float(lower.iloc[-1])
+
+        band_width = up - lo
+        if band_width > 0:
+            pct_b = (price - lo) / band_width  # 0=lower band, 1=upper band
+        else:
+            pct_b = 0.5
+
+        if pct_b <= 0.20:
+            signal  = "NEAR_LOWER"
+            bullish = True    # near lower band = oversold bounce opportunity
+        elif pct_b >= 0.80:
+            signal  = "NEAR_UPPER"
+            bullish = False   # near upper band = extended
+        else:
+            signal  = "MIDDLE"
+            bullish = False   # neutral
+
+        result.update({
+            "upper":   round(up, 2),
+            "middle":  round(mid, 2),
+            "lower":   round(lo, 2),
+            "pct_b":   round(pct_b, 3),
+            "signal":  signal,
+            "bullish": bullish,
+        })
+    except Exception:
+        pass
+    return result
 
 
 # ─────────────────────────────────────────────────────────────
@@ -273,20 +365,22 @@ def analyze_weekly(ticker: yf.Ticker) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 def score_call_setup(
-    regime:      str,
-    rsi:         float,
-    trend:       str,
-    vol_score:   int,
-    weekly_trend: str,
+    regime:        str,
+    rsi:           float,
+    trend:         str,
+    vol_score:     int,
+    weekly_trend:  str,
     pct_from_ma50: float,
-    close:       pd.Series,
-    rsi_series:  pd.Series,
+    close:         pd.Series,
+    rsi_series:    pd.Series,
+    macd:          dict = None,
+    bollinger:     dict = None,
 ) -> dict:
     """
-    Score a potential CALL setup on a 10-point scale.
+    Score a potential CALL setup on a 12-point scale.
 
     Returns:
-        score        int 0-10
+        score        int 0-12
         breakdown    dict of each component score
         reasons      list of strings explaining what passed/failed
         conviction   str VERY_HIGH / HIGH / MODERATE / NONE
@@ -372,12 +466,49 @@ def score_call_setup(
         breakdown["support"] = 0
         reasons.append(f"~ Support [0/1] Not near key support ({pct_from_ma50:+.1f}% from MA50)")
 
+    # ── 7. MACD (0-1) ───────────────────────────────────────
+    if macd and macd.get("macd") is not None:
+        if macd["bullish"]:
+            breakdown["macd"] = 1
+            reasons.append(
+                f"✓ MACD    [1/1] Bullish — MACD {macd['macd']:.3f} above signal {macd['signal']:.3f}"
+            )
+        else:
+            breakdown["macd"] = 0
+            reasons.append(
+                f"✗ MACD    [0/1] Bearish — MACD {macd['macd']:.3f} below signal {macd['signal']:.3f}"
+            )
+    else:
+        breakdown["macd"] = 0
+        reasons.append("~ MACD    [0/1] Insufficient data")
+
+    # ── 8. Bollinger Bands (0-1) ────────────────────────────
+    if bollinger and bollinger.get("signal") != "UNKNOWN":
+        if bollinger["bullish"]:
+            breakdown["bollinger"] = 1
+            reasons.append(
+                f"✓ BB      [1/1] Near lower band — oversold bounce (BB% {bollinger['pct_b']:.2f})"
+            )
+        elif bollinger["signal"] == "NEAR_UPPER":
+            breakdown["bollinger"] = 0
+            reasons.append(
+                f"✗ BB      [0/1] Near upper band — extended (BB% {bollinger['pct_b']:.2f})"
+            )
+        else:
+            breakdown["bollinger"] = 0
+            reasons.append(
+                f"~ BB      [0/1] Mid-range (BB% {bollinger['pct_b']:.2f})"
+            )
+    else:
+        breakdown["bollinger"] = 0
+        reasons.append("~ BB      [0/1] Insufficient data")
+
     # ── Total ────────────────────────────────────────────────
     total = sum(breakdown.values())
 
-    if total >= 9:
+    if total >= 10:
         conviction = "VERY HIGH"
-    elif total >= 7:
+    elif total >= 8:
         conviction = "HIGH"
     elif total >= 6:
         conviction = "MODERATE"
@@ -863,24 +994,30 @@ def scan_symbol(symbol: str, regime: dict,
             return {"symbol": symbol, "score": 0, "error": "RSI calculation failed"}
 
         # Volume analysis
-        vol_data = analyze_volume(close, volume, config["vol_avg_days"])
+        vol_data  = analyze_volume(close, volume, config["vol_avg_days"])
 
         # Weekly trend
-        weekly = analyze_weekly(ticker)
+        weekly    = analyze_weekly(ticker)
+
+        # MACD and Bollinger
+        macd_data = compute_macd(close)
+        bb_data   = analyze_bollinger(close)
 
         # Earnings check
-        earnings = check_earnings(ticker, config["earnings_warn_days"])
+        earnings  = check_earnings(ticker, config["earnings_warn_days"])
 
         # Score
         scoring = score_call_setup(
-            regime      = regime["regime"],
-            rsi         = rsi,
-            trend       = trend,
-            vol_score   = vol_data["score"],
-            weekly_trend= weekly["trend"],
+            regime        = regime["regime"],
+            rsi           = rsi,
+            trend         = trend,
+            vol_score     = vol_data["score"],
+            weekly_trend  = weekly["trend"],
             pct_from_ma50 = pct_ma50,
-            close       = close,
-            rsi_series  = rsi_series,
+            close         = close,
+            rsi_series    = rsi_series,
+            macd          = macd_data,
+            bollinger     = bb_data,
         )
 
         # Add volume reason to scoring reasons
@@ -918,6 +1055,8 @@ def scan_symbol(symbol: str, regime: dict,
             "hv":         hv,
             "vol_data":   vol_data,
             "weekly":     weekly,
+            "macd":       macd_data,
+            "bollinger":  bb_data,
             "earnings":   earnings,
             "scoring":    scoring,
             "score":      score,
