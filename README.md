@@ -6,7 +6,7 @@ A Google Colab-based options strategy research notebook for identifying and vali
 
 ## Project Status
 
-- **Current Version:** v4.15
+- **Current Version:** v4.16
 - **Status:** Phase 1 complete — active trading use
 - **Platform:** Google Colab
 - **Language:** Python
