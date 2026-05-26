@@ -1,4 +1,4 @@
-"""
+ """
 options_scanner_v4.py
 =====================
 Phase 1 — CALL-side scanner with quality scoring gate.
@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.15"
+VERSION = "4.16"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -1294,6 +1294,9 @@ def print_results(scan: dict):
             print(f"\n  Disqualified (do not chase):")
             for r in hard_fails:
                 print(f"    {r['symbol']:6s}  {r['score']}/10 — {r['hard_fail']}")
+
+        rr_fails = [r for r in scan["all_results"]
+                    if r.get("rr_fail") and not r.get("error")]
         if rr_fails:
             print(f"\n  Scored well but failed 1:{config['min_reward_risk']:.0f} reward/risk:")
             for r in rr_fails[:5]:
