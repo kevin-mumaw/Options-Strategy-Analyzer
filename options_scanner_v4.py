@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.16"
+VERSION = "4.17"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -564,6 +564,281 @@ def black_scholes_greeks(option_type: str, S: float, K: float,
 
 
 # ─────────────────────────────────────────────────────────────
+# PUT SCORING
+# ─────────────────────────────────────────────────────────────
+
+def score_put_setup(
+    regime:        str,
+    rsi:           float,
+    trend:         str,
+    vol_score_bearish: int,
+    weekly_trend:  str,
+    pct_from_ma50: float,
+    close:         pd.Series,
+    rsi_series:    pd.Series,
+    macd:          dict = None,
+    bollinger:     dict = None,
+) -> dict:
+    """
+    Score a potential PUT setup on a 12-point scale.
+    Mirror of score_call_setup but with bearish criteria.
+
+    Individual stock override: if score >= 9, signal allowed even in BULLISH regime.
+    """
+    breakdown = {}
+    reasons   = []
+
+    # ── 1. Regime (0-2) ─────────────────────────────────────
+    if regime == "BEARISH":
+        breakdown["regime"] = 2
+        reasons.append("✓ Regime [2/2] BEARISH — market tailwind for PUTs")
+    elif regime == "MIXED":
+        breakdown["regime"] = 1
+        reasons.append("~ Regime [1/2] MIXED — selective PUT entries only")
+    else:
+        breakdown["regime"] = 0
+        reasons.append("~ Regime [0/2] BULLISH — individual stock weakness required")
+
+    # ── 2. RSI (0-2) ────────────────────────────────────────
+    rsi_prev = safe_float(rsi_series.iloc[-3], 50)
+    rsi_turning_down = rsi < rsi_prev if rsi_prev else False
+
+    if rsi >= CONFIG["rsi_overbought"] and rsi_turning_down:
+        breakdown["rsi"] = 2
+        reasons.append(f"✓ RSI     [2/2] Overbought rollover — RSI {rsi:.0f} turning down")
+    elif rsi >= CONFIG["rsi_overbought"]:
+        breakdown["rsi"] = 2
+        reasons.append(f"✓ RSI     [2/2] Overbought — RSI {rsi:.0f} (potential reversal)")
+    elif rsi > 45 and trend != "UPTREND":
+        breakdown["rsi"] = 1
+        reasons.append(f"~ RSI     [1/2] Neutral — RSI {rsi:.0f} (room to fall)")
+    elif rsi <= CONFIG["rsi_oversold"]:
+        breakdown["rsi"] = 0
+        reasons.append(f"✗ RSI     [0/2] Oversold — RSI {rsi:.0f} (bounce risk)")
+    else:
+        breakdown["rsi"] = 0
+        reasons.append(f"✗ RSI     [0/2] RSI {rsi:.0f} in uptrend — unfavorable for PUT")
+
+    # ── 3. Trend (0-2) ──────────────────────────────────────
+    if trend == "DOWNTREND":
+        breakdown["trend"] = 2
+        reasons.append("✓ Trend   [2/2] Confirmed downtrend — price < MA20 < MA50")
+    elif trend == "MIXED":
+        if pct_from_ma50 < 0:
+            breakdown["trend"] = 1
+            reasons.append("~ Trend   [1/2] Mixed but below MA50 resistance")
+        else:
+            breakdown["trend"] = 0
+            reasons.append("✗ Trend   [0/2] Mixed with price above MA50")
+    else:
+        breakdown["trend"] = 0
+        reasons.append("✗ Trend   [0/2] Uptrend — counter-trend PUT")
+
+    # ── 4. Volume (0-2) ─────────────────────────────────────
+    breakdown["volume"] = vol_score_bearish
+
+    # ── 5. Weekly alignment (0-1) ───────────────────────────
+    if weekly_trend == "DOWNTREND":
+        breakdown["weekly"] = 1
+        reasons.append("✓ Weekly  [1/1] Weekly downtrend confirmed")
+    elif weekly_trend == "MIXED":
+        breakdown["weekly"] = 0
+        reasons.append("~ Weekly  [0/1] Weekly trend mixed")
+    else:
+        breakdown["weekly"] = 0
+        reasons.append("✗ Weekly  [0/1] Weekly uptrend — counter-trend PUT")
+
+    # ── 6. Resistance quality (0-1) ─────────────────────────
+    near_resistance = abs(pct_from_ma50) <= CONFIG["support_proximity"] * 100
+    overextended_down = pct_from_ma50 < -10.0
+
+    if near_resistance and trend != "UPTREND":
+        breakdown["resistance"] = 1
+        reasons.append(f"✓ Resist  [1/1] Near MA50 resistance ({pct_from_ma50:+.1f}%)")
+    elif overextended_down:
+        breakdown["resistance"] = 0
+        reasons.append(f"✗ Resist  [0/1] Extended {pct_from_ma50:+.1f}% below MA50 — bounce risk")
+    else:
+        breakdown["resistance"] = 0
+        reasons.append(f"~ Resist  [0/1] Not near key resistance ({pct_from_ma50:+.1f}% from MA50)")
+
+    # ── 7. MACD (0-1) ───────────────────────────────────────
+    if macd and macd.get("macd") is not None:
+        if not macd["bullish"]:
+            breakdown["macd"] = 1
+            reasons.append(
+                f"✓ MACD    [1/1] Bearish — MACD {macd['macd']:.3f} below signal {macd['signal']:.3f}"
+            )
+        else:
+            breakdown["macd"] = 0
+            reasons.append(
+                f"✗ MACD    [0/1] Bullish — MACD {macd['macd']:.3f} above signal {macd['signal']:.3f}"
+            )
+    else:
+        breakdown["macd"] = 0
+        reasons.append("~ MACD    [0/1] Insufficient data")
+
+    # ── 8. Bollinger Bands (0-1) ────────────────────────────
+    if bollinger and bollinger.get("signal") != "UNKNOWN":
+        if bollinger["signal"] == "NEAR_UPPER":
+            breakdown["bollinger"] = 1
+            reasons.append(
+                f"✓ BB      [1/1] Near upper band — extended (BB% {bollinger['pct_b']:.2f})"
+            )
+        elif bollinger["bullish"]:
+            breakdown["bollinger"] = 0
+            reasons.append(
+                f"✗ BB      [0/1] Near lower band — oversold, bounce risk (BB% {bollinger['pct_b']:.2f})"
+            )
+        else:
+            breakdown["bollinger"] = 0
+            reasons.append(
+                f"~ BB      [0/1] Mid-range (BB% {bollinger['pct_b']:.2f})"
+            )
+    else:
+        breakdown["bollinger"] = 0
+        reasons.append("~ BB      [0/1] Insufficient data")
+
+    # ── Total ────────────────────────────────────────────────
+    total = sum(breakdown.values())
+
+    if total >= 10:
+        conviction = "VERY HIGH"
+    elif total >= 8:
+        conviction = "HIGH"
+    elif total >= 6:
+        conviction = "MODERATE"
+    else:
+        conviction = "NONE"
+
+    return {
+        "score":      total,
+        "breakdown":  breakdown,
+        "reasons":    reasons,
+        "conviction": conviction,
+    }
+
+
+def find_best_put(ticker: yf.Ticker, stock_price: float,
+                  config: dict = CONFIG) -> Optional[dict]:
+    """
+    Find the best available PUT option meeting liquidity and DTE criteria.
+    Adaptive delta range (negative) by stock price:
+      Under $100  : delta -0.55 to -0.80 (ITM preferred)
+      $100-$300   : delta -0.50 to -0.70
+      Over $300   : delta -0.40 to -0.65
+    """
+    if stock_price < 100:
+        min_delta = -0.80
+        max_delta = -0.55
+    elif stock_price < 300:
+        min_delta = -0.70
+        max_delta = -0.50
+    else:
+        min_delta = -0.65
+        max_delta = -0.40
+
+    try:
+        today       = datetime.today().date()
+        expirations = ticker.options
+
+        if not expirations:
+            return None
+
+        best_exp = None
+        best_dte = None
+        for exp in expirations:
+            exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+            dte = (exp_date - today).days
+            if dte >= config["min_dte"]:
+                if best_dte is None or abs(dte - config["target_dte"]) < abs(best_dte - config["target_dte"]):
+                    best_exp = exp
+                    best_dte = dte
+                if dte > 75:
+                    break
+
+        if not best_exp:
+            return None
+
+        chain = ticker.option_chain(best_exp)
+        puts  = chain.puts.copy()
+
+        if puts.empty:
+            return None
+
+        puts = puts[
+            (puts["bid"]  > 0) &
+            (puts["ask"]  > puts["bid"]) &
+            (puts["lastPrice"] > 0)
+        ].copy()
+
+        puts = puts[
+            (puts["volume"].fillna(0)       >= config["min_option_volume"]) |
+            (puts["openInterest"].fillna(0) >= config["min_option_oi"])
+        ].copy()
+
+        if puts.empty:
+            return None
+
+        puts["dist"] = abs(puts["strike"] - stock_price) / stock_price
+        puts = puts[puts["dist"] < config["atm_tolerance"]].sort_values("dist")
+
+        if puts.empty:
+            return None
+
+        for _, row in puts.iterrows():
+            ask        = safe_float(row["ask"])
+            bid        = safe_float(row["bid"])
+            if ask is None or bid is None or ask == 0:
+                continue
+
+            spread_pct = (ask - bid) / ask * 100
+            if spread_pct > config["max_spread_pct"]:
+                continue
+
+            iv     = safe_float(row.get("impliedVolatility", 0), 0)
+            oi     = int(row.get("openInterest", 0) or 0)
+            vol    = float(row.get("volume", 0) or 0)
+            vol    = int(vol) if not np.isnan(vol) else 0
+            strike = float(row["strike"])
+            mid    = round((bid + ask) / 2, 2)
+            T      = best_dte / 365.0
+
+            greeks = black_scholes_greeks(
+                "put", stock_price, strike, T, 0.045, iv if iv > 0 else 0.25
+            )
+
+            delta = greeks.get("delta", -0.5)
+            if not np.isnan(delta):
+                if delta < min_delta or delta > max_delta:
+                    continue
+            else:
+                continue
+
+            return {
+                "expiry":     best_exp,
+                "dte":        best_dte,
+                "strike":     strike,
+                "bid":        round(bid, 2),
+                "ask":        round(ask, 2),
+                "mid":        mid,
+                "iv":         round(iv * 100, 1) if iv else None,
+                "volume":     vol,
+                "oi":         oi,
+                "spread_pct": round(spread_pct, 1),
+                "delta":      greeks["delta"],
+                "gamma":      greeks["gamma"],
+                "theta":      greeks["theta"],
+                "vega":       greeks["vega"],
+                "delta_tier": f"{min_delta:.2f} to {max_delta:.2f}",
+            }
+
+    except Exception as e:
+        print(f"  [find_best_put error — {type(e).__name__}: {e}]")
+    return None
+
+
+# ─────────────────────────────────────────────────────────────
 # OPTIONS CHAIN
 # ─────────────────────────────────────────────────────────────
 
@@ -1011,7 +1286,7 @@ def scan_symbol(symbol: str, regime: dict,
         # Earnings check
         earnings  = check_earnings(ticker, config["earnings_warn_days"])
 
-        # Score
+        # Score CALL setup
         scoring = score_call_setup(
             regime        = regime["regime"],
             rsi           = rsi,
@@ -1025,6 +1300,21 @@ def scan_symbol(symbol: str, regime: dict,
             bollinger     = bb_data,
         )
 
+        # Score PUT setup — bearish volume score is inverse of bullish
+        bearish_vol_score = 2 - vol_data["score"]  # distribution=2, accumulation=0
+        put_scoring = score_put_setup(
+            regime             = regime["regime"],
+            rsi                = rsi,
+            trend              = trend,
+            vol_score_bearish  = bearish_vol_score,
+            weekly_trend       = weekly["trend"],
+            pct_from_ma50      = pct_ma50,
+            close              = close,
+            rsi_series         = rsi_series,
+            macd               = macd_data,
+            bollinger          = bb_data,
+        )
+
         # Add volume reason to scoring reasons
         vol_pts = vol_data["score"]
         scoring["reasons"].insert(
@@ -1033,10 +1323,10 @@ def scan_symbol(symbol: str, regime: dict,
             f"Volume  [{vol_pts}/2] {vol_data['detail']}"
         )
 
-        score = scoring["score"]
+        score      = scoring["score"]
+        put_score  = put_scoring["score"]
 
-        # ── Hard disqualifiers (Brown's "don't chase" rules) ──
-        # These override the score — no signal regardless of points earned
+        # ── Hard disqualifiers for CALLs ──────────────────────
         hard_fail = None
         if rsi >= config["rsi_overbought"] and pct_ma50 > 10.0:
             hard_fail = f"Overbought (RSI {rsi:.0f}) AND extended (+{pct_ma50:.1f}% above MA50) — do not chase"
@@ -1047,46 +1337,64 @@ def scan_symbol(symbol: str, regime: dict,
         elif earnings["has_earnings"]:
             hard_fail = earnings["warning"]
 
-        # Return even if below threshold — used for "near misses" display
+        # ── Hard disqualifiers for PUTs ───────────────────────
+        put_hard_fail = None
+        if rsi <= config["rsi_oversold"]:
+            put_hard_fail = f"RSI {rsi:.0f} — oversold, bounce risk for PUT entry"
+        elif pct_ma50 < -15.0:
+            put_hard_fail = f"{pct_ma50:.1f}% below MA50 — too extended down, bounce risk"
+        elif earnings["has_earnings"]:
+            put_hard_fail = earnings["warning"]
+
+        # PUT override: allow in BULLISH regime only if score >= 9
+        put_regime_block = (regime["regime"] == "BULLISH" and put_score < 9)
+
         result = {
-            "symbol":     symbol,
-            "price":      price,
-            "rsi":        rsi,
-            "trend":      trend,
-            "ma20":       ma_s,
-            "ma50":       ma_l,
-            "pct_ma20":   pct_ma20,
-            "pct_ma50":   pct_ma50,
-            "hv":         hv,
-            "vol_data":   vol_data,
-            "weekly":     weekly,
-            "macd":       macd_data,
-            "bollinger":  bb_data,
-            "earnings":   earnings,
-            "scoring":    scoring,
-            "score":      score,
-            "conviction": scoring["conviction"],
-            "hard_fail":  hard_fail,
-            "option":     None,
-            "sizing":     None,
-            "error":      None,
+            "symbol":         symbol,
+            "price":          price,
+            "rsi":            rsi,
+            "trend":          trend,
+            "ma20":           ma_s,
+            "ma50":           ma_l,
+            "pct_ma20":       pct_ma20,
+            "pct_ma50":       pct_ma50,
+            "hv":             hv,
+            "vol_data":       vol_data,
+            "weekly":         weekly,
+            "macd":           macd_data,
+            "bollinger":      bb_data,
+            "earnings":       earnings,
+            "scoring":        scoring,
+            "score":          score,
+            "conviction":     scoring["conviction"],
+            "hard_fail":      hard_fail,
+            "put_scoring":    put_scoring,
+            "put_score":      put_score,
+            "put_conviction": put_scoring["conviction"],
+            "put_hard_fail":  put_hard_fail,
+            "put_regime_block": put_regime_block,
+            "option":         None,
+            "sizing":         None,
+            "put_option":     None,
+            "put_sizing":     None,
+            "found_option":   False,
+            "found_put":      False,
+            "error":          None,
         }
 
         result["found_option"] = False  # tracks if option was found before R/R check
 
         # Hard fails block signal generation entirely
         if hard_fail:
-            return result
-
-        if score >= config["min_score"]:
+            pass  # still continue to check PUT
+        elif score >= config["min_score"]:
             option = find_best_call(ticker, price, config)
             if option:
-                result["found_option"] = True  # option exists, may be cleared by R/R
+                result["found_option"] = True
                 sizing = size_position(option["ask"], score, config)
                 result["option"] = option
                 result["sizing"] = sizing
 
-                # If single leg too expensive, find a spread
                 if sizing["contracts"] == 0:
                     short_leg = find_spread_call(
                         ticker, price,
@@ -1101,10 +1409,9 @@ def scan_symbol(symbol: str, regime: dict,
                         result["spread"]     = short_leg
                         result["spread_siz"] = spread_siz
 
-                        # Check reward/risk on spread
                         if spread_siz and spread_siz["reward_risk"] < config["min_reward_risk"]:
                             result["rr_fail"] = spread_siz["reward_risk"]
-                            result["option"]  = None  # disqualify from signals
+                            result["option"]  = None
                     else:
                         result["spread"]     = None
                         result["spread_siz"] = None
@@ -1112,14 +1419,30 @@ def scan_symbol(symbol: str, regime: dict,
                     result["spread"]     = None
                     result["spread_siz"] = None
 
-                    # Check reward/risk on single leg
                     if sizing["contracts"] > 0:
                         target_gain = round(sizing["target_price"] - option["ask"], 2)
                         risk        = round(option["ask"] - sizing["stop_price"], 2)
                         rr          = round(target_gain / risk, 2) if risk > 0 else 0
                         if rr < config["min_reward_risk"]:
                             result["rr_fail"] = rr
-                            result["option"]  = None  # disqualify from signals
+                            result["option"]  = None
+
+        # PUT option lookup
+        if not put_hard_fail and not put_regime_block and put_score >= config["min_score"]:
+            put_option = find_best_put(ticker, price, config)
+            if put_option:
+                result["found_put"] = True
+                put_sizing = size_position(put_option["ask"], put_score, config)
+                result["put_option"] = put_option
+                result["put_sizing"] = put_sizing
+
+                if put_sizing["contracts"] > 0:
+                    target_gain = round(put_sizing["target_price"] - put_option["ask"], 2)
+                    risk        = round(put_option["ask"] - put_sizing["stop_price"], 2)
+                    rr          = round(target_gain / risk, 2) if risk > 0 else 0
+                    if rr < config["min_reward_risk"]:
+                        result["put_rr_fail"] = rr
+                        result["put_option"]  = None
 
         return result
 
@@ -1176,9 +1499,15 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
                       and r.get("option") is not None]
 
     signals        = all_qualified[:config["max_signals"]]
-    # Also qualified: scored but cut off by signal cap, exclude overbought
     also_qualified = [r for r in all_qualified[config["max_signals"]:]
                       if r.get("rsi", 0) < config["rsi_overbought"]][:5]
+
+    # PUT signals
+    put_signals    = [r for r in results
+                      if r.get("put_score", 0) >= config["min_score"]
+                      and r.get("put_option") is not None
+                      and not r.get("put_hard_fail")
+                      and not r.get("put_regime_block")][:config["max_signals"]]
 
     no_option      = [r for r in results
                       if r.get("score", 0) >= config["min_score"]
@@ -1192,7 +1521,6 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
                        and r.get("found_option")
                        and not r.get("hard_fail")]
 
-    # True near misses: scored exactly min_score - 1
     qualified_syms = set(r["symbol"] for r in all_qualified + no_option)
     near_misses    = [r for r in results
                       if r.get("score", 0) == config["min_score"] - 1
@@ -1210,6 +1538,7 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
     return {
         "regime":           regime,
         "signals":          signals,
+        "put_signals":      put_signals,
         "also_qualified":   also_qualified,
         "near_misses":      near_misses,
         "no_option":        no_option,
@@ -1492,9 +1821,88 @@ def print_results(scan: dict):
             print(f"    {r['symbol']:6s}  {r['score']}/10 — "
                   f"no option met delta/liquidity requirements")
 
+    # ── PUT Signals ─────────────────────────────────────────
+    put_signals = scan.get("put_signals", [])
+    if put_signals:
+        print(f"\n{'━' * W}")
+        print(f"  PUT SIGNALS — {len(put_signals)} signal(s) found")
+        print(f"{'━' * W}")
+
+        for i, r in enumerate(put_signals, 1):
+            sym      = r["symbol"]
+            score    = r["put_score"]
+            conv     = r["put_conviction"]
+            opt      = r["put_option"]
+            siz      = r["put_sizing"]
+            scoring  = r["put_scoring"]
+            regime   = scan["regime"]["regime"]
+
+            print(f"\n{'━' * W}")
+            override = " ⚡ INDIVIDUAL STOCK SIGNAL" if regime == "BULLISH" else ""
+            print(f"  PUT #{i}  |  {sym} — BUY PUT  |  "
+                  f"Score: {score}/12  [{conv}]{override}")
+            print(f"{'━' * W}")
+
+            print(f"\n  WHY THIS TRADE:")
+            for reason in scoring["reasons"]:
+                print(f"    {reason}")
+
+            print(f"\n  STOCK:")
+            print(f"    Price: ${r['price']:.2f}   RSI: {r['rsi']:.0f}   "
+                  f"Trend: {r['trend']}")
+            print(f"    MA20:  ${r['ma20']:.2f} ({r['pct_ma20']:+.1f}%)   "
+                  f"MA50: ${r['ma50']:.2f} ({r['pct_ma50']:+.1f}%)")
+            print(f"    HV30:  {r['hv']}%   Weekly: {r['weekly']['trend']}")
+
+            earn = r.get("earnings", {})
+            if earn.get("earnings_date"):
+                days = earn.get("days_to_earnings")
+                ed   = earn.get("earnings_date")
+                print(f"    Earnings: {ed} ({days} days away)")
+
+            print(f"\n  OPTION:")
+            print(f"    {opt['expiry']} ${opt['strike']:.0f} PUT  |  {opt['dte']} DTE")
+            print(f"    Bid: ${opt['bid']:.2f}  Ask: ${opt['ask']:.2f}  "
+                  f"Mid: ${opt['mid']:.2f}  Spread: {opt['spread_pct']:.1f}%")
+            iv_str = f"{opt['iv']}%" if opt['iv'] else "N/A"
+            print(f"    IV: {iv_str}  |  Delta: {opt['delta']}  |  "
+                  f"Theta: ${opt['theta']*100:.2f}/day  |  "
+                  f"Vol: {opt['volume']}  OI: {opt['oi']}")
+
+            print(f"\n  POSITION (${config['account_size']:,.0f} account):")
+            if siz and siz["contracts"] > 0:
+                target_gain = round(siz["target_price"] - opt["ask"], 2)
+                risk        = round(opt["ask"] - siz["stop_price"], 2)
+                rr          = round(target_gain / risk, 2) if risk > 0 else 0
+                print(f"    Type      : Single leg PUT")
+                print(f"    Contracts : {siz['contracts']}")
+                print(f"    Cost      : ${siz['total_cost']:,.0f}  "
+                      f"({siz['pct_of_account']}% of account)")
+                print(f"    Reward/Risk: {rr:.1f}x")
+            else:
+                print(f"    ⚠ Premium too high for account size")
+
+            time_stop_date = (
+                datetime.strptime(opt["expiry"], "%Y-%m-%d")
+                - timedelta(days=config["time_stop_dte"])
+            ).strftime("%b %d")
+
+            print(f"\n  EXIT RULES — follow these exactly:")
+            if siz and siz["contracts"] > 0:
+                print(f"    ┌─ Stop loss     : Sell if premium drops to "
+                      f"${siz['stop_price']:.2f}  "
+                      f"(-{int(config['stop_loss_pct']*100)}%)")
+                print(f"    ├─ Profit target : Sell if premium reaches "
+                      f"${siz['target_price']:.2f}  "
+                      f"(+{int(config['profit_target_pct']*100)}%)")
+                print(f"    └─ Time stop     : Exit by {time_stop_date} "
+                      f"({config['time_stop_dte']} DTE remaining)")
+            print()
+
     # ── Footer ──────────────────────────────────────────────
     print(f"{'─' * W}")
-    print(f"  SCAN COMPLETE  |  {len(signals)} signal(s)  |  "
+    total_signals = len(signals) + len(put_signals)
+    print(f"  SCAN COMPLETE  |  {len(signals)} CALL + {len(put_signals)} PUT signal(s)  |  "
           f"{scan['scanned']} symbols scanned")
     print(f"  Remember: No trade is always a valid choice.\n")
 
