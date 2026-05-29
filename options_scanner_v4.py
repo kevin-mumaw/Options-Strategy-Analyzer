@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.17"
+VERSION = "4.18"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -1752,6 +1752,9 @@ def print_results(scan: dict):
                   f"(+{int(config['profit_target_pct']*100)}%)")
             print(f"    └─ Time stop     : Exit by {time_stop_date} "
                   f"({config['time_stop_dte']} DTE remaining)")
+            print(f"\n  ⚠  STOP ORDER — Robinhood: use STOP LIMIT (not limit sell)")
+            print(f"     Stop price : ${siz['stop_price']:.2f}")
+            print(f"     Limit price: ${round(siz['stop_price'] * 0.95, 2):.2f}  (5% below stop)")
         elif spr and spr_siz and spr_siz["contracts"] > 0:
             print(f"    ┌─ Stop loss     : Close spread if value drops to "
                   f"${spr_siz['stop_price']:.2f}  (-50% of debit)")
@@ -1897,7 +1900,9 @@ def print_results(scan: dict):
                       f"(+{int(config['profit_target_pct']*100)}%)")
                 print(f"    └─ Time stop     : Exit by {time_stop_date} "
                       f"({config['time_stop_dte']} DTE remaining)")
-            print()
+                print(f"\n  ⚠  STOP ORDER — Robinhood: use STOP LIMIT (not limit sell)")
+                print(f"     Stop price : ${siz['stop_price']:.2f}")
+                print(f"     Limit price: ${round(siz['stop_price'] * 0.95, 2):.2f}  (5% below stop)")
 
     # ── Footer ──────────────────────────────────────────────
     print(f"{'─' * W}")
