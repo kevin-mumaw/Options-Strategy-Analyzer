@@ -1,6 +1,23 @@
 # Changelog
 All notable changes to the Options Strategy Analyzer project.
 
+## [4.17.0] - 2026-05-27
+### Added — Phase 2: PUT Signal Logic
+- score_put_setup() — 12-point bearish scoring system
+- find_best_put() — ITM put selection with adaptive delta range
+- PUT signals displayed in separate section below CALL signals
+- Individual stock override — PUT allowed in BULLISH regime if score >= 9
+- PUT hard disqualifiers — oversold stocks blocked, extended-down stocks blocked
+- Bearish volume scoring — inverse of CALL volume (distribution=2, accumulation=0)
+- Footer updated to show CALL + PUT signal counts separately
+
+### Fixed
+- rr_fails variable undefined in no-signal display path (v4.16)
+
+### Notes
+- First live trade executed: BAC $50 Call July 17 2026
+- Stop Limit order required in Robinhood — NOT limit sell
+- 
 ## [4.10.0] - 2026-05-25
 ### Fixed
 - Options now correctly target July 17 monthly expiration over July 2 weekly (target_dte raised from 45 to 52)
