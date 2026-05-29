@@ -6,15 +6,16 @@ A Google Colab-based options strategy research notebook for identifying and vali
 
 ## Project Status
 
-- **Current Version:** v4.16
-- **Status:** Phase 1 complete — active trading use
+- **Current Version:** v4.17
+- **Status:** Phase 1 & 2 complete — active trading use
 - **Platform:** Google Colab
 - **Language:** Python
 - **Framework:** Jason Brown / PTU trading principles
 
 ---
 
-## Phase 1 Scanner (options_scanner_v4.py)
+## Phase 1 & 2 Scanner (options_scanner_v4.py)
+
 
 A complete rewrite as a standalone importable Python module. Designed to surface 1-3 high-quality trade candidates per scan and clearly say "no trade today" when nothing qualifies.
 
@@ -69,6 +70,7 @@ When single leg premium exceeds account limits, automatically finds a spread:
 3. **Disqualified** — stocks blocked by hard rules with reason
 4. **Near misses** — scored 5/12, one factor away from qualifying
 5. **Option found, failed R/R** — good stocks at wrong entry point
+6. **PUT signals** — bearish setups with full scoring, Greeks, sizing, and exit prices
 
 ### Watchlist (34 symbols across 4 price tiers)
 
