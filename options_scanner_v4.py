@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.18"
+VERSION = "4.19"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -839,6 +839,281 @@ def find_best_put(ticker: yf.Ticker, stock_price: float,
 
 
 # ─────────────────────────────────────────────────────────────
+# CASH SECURED PUT (CSP) SCORING & SELECTION
+# ─────────────────────────────────────────────────────────────
+
+def score_csp_setup(
+    regime:        str,
+    rsi:           float,
+    trend:         str,
+    vol_score:     int,
+    weekly_trend:  str,
+    pct_from_ma50: float,
+    iv_pct:        float,
+    macd:          dict = None,
+    bollinger:     dict = None,
+) -> dict:
+    """
+    Score a Cash Secured Put setup on a 10-point scale.
+
+    CSP logic: sell a put below current price and collect premium.
+    Best conditions: stock you want to own, near support, elevated IV.
+
+    Scoring:
+      Regime    0-2  BULLISH/MIXED favorable, BEARISH unfavorable
+      Trend     0-2  Uptrend or near strong support
+      RSI       0-2  Neutral to oversold (not overbought — no chasing)
+      IV        0-2  Elevated IV = more premium collected
+      Support   0-1  Strike can be placed at/below MA50
+      MACD      0-1  Bullish or neutral (not aggressively bearish)
+    """
+    breakdown = {}
+    reasons   = []
+
+    # ── 1. Regime (0-2) ─────────────────────────────────────
+    if regime == "BULLISH":
+        breakdown["regime"] = 2
+        reasons.append("✓ Regime [2/2] BULLISH — ideal for selling puts")
+    elif regime == "MIXED":
+        breakdown["regime"] = 1
+        reasons.append("~ Regime [1/2] MIXED — CSP viable with strong support")
+    else:
+        breakdown["regime"] = 0
+        reasons.append("✗ Regime [0/2] BEARISH — avoid selling puts, assignment risk high")
+
+    # ── 2. Trend (0-2) ──────────────────────────────────────
+    if trend == "UPTREND":
+        breakdown["trend"] = 2
+        reasons.append("✓ Trend   [2/2] Uptrend — stock unlikely to breach put strike")
+    elif trend == "MIXED" and pct_from_ma50 > -5:
+        breakdown["trend"] = 1
+        reasons.append("~ Trend   [1/2] Mixed but near MA50 — decent support")
+    else:
+        breakdown["trend"] = 0
+        reasons.append("✗ Trend   [0/2] Downtrend — assignment risk elevated")
+
+    # ── 3. RSI (0-2) ────────────────────────────────────────
+    if CONFIG["rsi_oversold"] <= rsi <= 55:
+        breakdown["rsi"] = 2
+        reasons.append(f"✓ RSI     [2/2] Neutral/oversold — RSI {rsi:.0f} (good entry)")
+    elif 55 < rsi < CONFIG["rsi_overbought"]:
+        breakdown["rsi"] = 1
+        reasons.append(f"~ RSI     [1/2] Slightly elevated — RSI {rsi:.0f}")
+    elif rsi >= CONFIG["rsi_overbought"]:
+        breakdown["rsi"] = 0
+        reasons.append(f"✗ RSI     [0/2] Overbought — RSI {rsi:.0f} (pullback risk)")
+    else:
+        breakdown["rsi"] = 1
+        reasons.append(f"~ RSI     [1/2] Oversold — RSI {rsi:.0f} (bounce likely)")
+
+    # ── 4. IV (0-2) — elevated IV = more premium ────────────
+    if iv_pct is not None:
+        if iv_pct >= 60:
+            breakdown["iv"] = 2
+            reasons.append(f"✓ IV      [2/2] Elevated — {iv_pct:.0f}th percentile (rich premium)")
+        elif iv_pct >= 40:
+            breakdown["iv"] = 1
+            reasons.append(f"~ IV      [1/2] Moderate — {iv_pct:.0f}th percentile")
+        else:
+            breakdown["iv"] = 0
+            reasons.append(f"✗ IV      [0/2] Low — {iv_pct:.0f}th percentile (thin premium)")
+    else:
+        breakdown["iv"] = 1
+        reasons.append("~ IV      [1/2] IV data unavailable")
+
+    # ── 5. Support quality (0-1) ────────────────────────────
+    # For CSP we want to sell strike at or below MA50
+    if pct_from_ma50 >= 0 and pct_from_ma50 <= 8:
+        breakdown["support"] = 1
+        reasons.append(f"✓ Support [1/1] Near MA50 — strike can be placed at support ({pct_from_ma50:+.1f}%)")
+    elif pct_from_ma50 > 8:
+        breakdown["support"] = 0
+        reasons.append(f"~ Support [0/1] Extended above MA50 (+{pct_from_ma50:.1f}%) — strike far from support")
+    else:
+        breakdown["support"] = 0
+        reasons.append(f"✗ Support [0/1] Below MA50 ({pct_from_ma50:.1f}%) — assignment risk at support")
+
+    # ── 6. MACD (0-1) ───────────────────────────────────────
+    if macd and macd.get("macd") is not None:
+        if macd["bullish"]:
+            breakdown["macd"] = 1
+            reasons.append(f"✓ MACD    [1/1] Bullish momentum — favorable for CSP")
+        else:
+            breakdown["macd"] = 0
+            reasons.append(f"✗ MACD    [0/1] Bearish — monitor closely if assigned")
+    else:
+        breakdown["macd"] = 0
+        reasons.append("~ MACD    [0/1] Insufficient data")
+
+    total = sum(breakdown.values())
+
+    if total >= 8:
+        conviction = "HIGH"
+    elif total >= 6:
+        conviction = "MODERATE"
+    else:
+        conviction = "NONE"
+
+    return {
+        "score":      total,
+        "breakdown":  breakdown,
+        "reasons":    reasons,
+        "conviction": conviction,
+    }
+
+
+def find_best_csp(ticker: yf.Ticker, stock_price: float,
+                  config: dict = CONFIG) -> Optional[dict]:
+    """
+    Find the best put to SELL for a cash secured put.
+    Targets:
+      - Strike at or slightly below MA50 (built-in margin of safety)
+      - Delta -0.25 to -0.40 (OTM — collecting premium, not expecting assignment)
+      - 30-45 DTE (enough premium, not too much time risk)
+      - Sufficient liquidity
+    """
+    try:
+        today       = datetime.today().date()
+        expirations = ticker.options
+
+        if not expirations:
+            return None
+
+        # For CSP prefer slightly shorter DTE (30-40 days)
+        best_exp = None
+        best_dte = None
+        for exp in expirations:
+            exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+            dte = (exp_date - today).days
+            if dte >= config["min_dte"]:
+                if best_dte is None or abs(dte - 38) < abs(best_dte - 38):
+                    best_exp = exp
+                    best_dte = dte
+                if dte > 75:
+                    break
+
+        if not best_exp:
+            return None
+
+        chain = ticker.option_chain(best_exp)
+        puts  = chain.puts.copy()
+
+        if puts.empty:
+            return None
+
+        puts = puts[
+            (puts["bid"]  > 0) &
+            (puts["ask"]  > puts["bid"]) &
+            (puts["lastPrice"] > 0)
+        ].copy()
+
+        puts = puts[
+            (puts["volume"].fillna(0)       >= config["min_option_volume"]) |
+            (puts["openInterest"].fillna(0) >= config["min_option_oi"])
+        ].copy()
+
+        if puts.empty:
+            return None
+
+        # For CSP: target OTM puts (below current price)
+        puts = puts[puts["strike"] < stock_price].copy()
+        puts["dist"] = abs(puts["strike"] - stock_price) / stock_price
+        puts = puts[puts["dist"] < 0.12].sort_values("dist")
+
+        if puts.empty:
+            return None
+
+        T = best_dte / 365.0
+
+        for _, row in puts.iterrows():
+            bid    = safe_float(row["bid"])
+            ask    = safe_float(row["ask"])
+            if bid is None or ask is None or bid <= 0:
+                continue
+
+            spread_pct = (ask - bid) / ask * 100
+            if spread_pct > config["max_spread_pct"]:
+                continue
+
+            iv     = safe_float(row.get("impliedVolatility", 0), 0)
+            strike = float(row["strike"])
+            oi     = int(row.get("openInterest", 0) or 0)
+            vol    = float(row.get("volume", 0) or 0)
+            vol    = int(vol) if not np.isnan(vol) else 0
+            mid    = round((bid + ask) / 2, 2)
+
+            greeks = black_scholes_greeks(
+                "put", stock_price, strike, T, 0.045, iv if iv > 0 else 0.25
+            )
+
+            delta = greeks.get("delta", -0.30)
+            # CSP: want OTM puts, delta -0.20 to -0.40
+            if not np.isnan(delta):
+                if delta < -0.45 or delta > -0.15:
+                    continue
+            else:
+                continue
+
+            # Premium must be meaningful — at least $0.30 per contract
+            if bid < 0.30:
+                continue
+
+            return {
+                "expiry":         best_exp,
+                "dte":            best_dte,
+                "strike":         strike,
+                "bid":            round(bid, 2),
+                "ask":            round(ask, 2),
+                "mid":            mid,
+                "iv":             round(iv * 100, 1) if iv else None,
+                "volume":         vol,
+                "oi":             oi,
+                "spread_pct":     round(spread_pct, 1),
+                "delta":          greeks["delta"],
+                "theta":          greeks["theta"],
+                "cash_required":  round(strike * 100, 2),
+                "premium_yield":  round(bid / strike * 100, 2),
+            }
+
+    except Exception as e:
+        print(f"  [find_best_csp error — {type(e).__name__}: {e}]")
+    return None
+
+
+def size_csp(put_bid: float, strike: float,
+             config: dict = CONFIG) -> dict:
+    """
+    Calculate CSP position sizing.
+    Cash required = strike × 100 per contract.
+    Max contracts limited by available capital.
+    """
+    account       = config["account_size"]
+    cash_required = strike * 100
+    premium       = put_bid * 100
+
+    # Don't tie up more than 30% of account in one CSP
+    max_by_capital = int((account * 0.30) // cash_required)
+    contracts      = max(min(max_by_capital, config["max_positions"]), 0)
+
+    if contracts == 0 and cash_required <= account * 0.50:
+        contracts = 1
+
+    total_premium  = round(contracts * premium, 2)
+    total_cash     = round(contracts * cash_required, 2)
+    pct_of_account = round(total_cash / account * 100, 1)
+    breakeven      = round(strike - put_bid, 2)
+
+    return {
+        "contracts":      contracts,
+        "total_premium":  total_premium,
+        "total_cash":     total_cash,
+        "pct_of_account": pct_of_account,
+        "breakeven":      breakeven,
+        "cash_required":  cash_required,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
 # OPTIONS CHAIN
 # ─────────────────────────────────────────────────────────────
 
@@ -1315,6 +1590,39 @@ def scan_symbol(symbol: str, regime: dict,
             bollinger          = bb_data,
         )
 
+        # Score CSP setup
+        iv_pct = None
+        try:
+            hv_series = close.pct_change().rolling(30).std() * np.sqrt(252) * 100
+            iv_pct = float(round((hv_series < hv_series.iloc[-1]).mean() * 100, 1))
+        except Exception:
+            pass
+
+        csp_scoring = score_csp_setup(
+            regime        = regime["regime"],
+            rsi           = rsi,
+            trend         = trend,
+            vol_score     = vol_data["score"],
+            weekly_trend  = weekly["trend"],
+            pct_from_ma50 = pct_ma50,
+            iv_pct        = iv_pct,
+            macd          = macd_data,
+            bollinger     = bb_data,
+        )
+
+        # Score CSP setup
+        csp_scoring = score_csp_setup(
+            regime        = regime["regime"],
+            rsi           = rsi,
+            trend         = trend,
+            vol_score     = vol_data["score"],
+            weekly_trend  = weekly["trend"],
+            pct_from_ma50 = pct_ma50,
+            iv_pct        = hv,
+            macd          = macd_data,
+            bollinger     = bb_data,
+        )
+
         # Add volume reason to scoring reasons
         vol_pts = vol_data["score"]
         scoring["reasons"].insert(
@@ -1379,6 +1687,12 @@ def scan_symbol(symbol: str, regime: dict,
             "put_sizing":     None,
             "found_option":   False,
             "found_put":      False,
+            "csp_scoring":    csp_scoring,
+            "csp_score":      csp_scoring["score"],
+            "csp_conviction": csp_scoring["conviction"],
+            "csp_option":     None,
+            "csp_sizing":     None,
+            "found_csp":      False,
             "error":          None,
         }
 
@@ -1444,6 +1758,18 @@ def scan_symbol(symbol: str, regime: dict,
                         result["put_rr_fail"] = rr
                         result["put_option"]  = None
 
+        # CSP option lookup — only in BULLISH or MIXED regime
+        if (not earnings["has_earnings"]
+                and csp_scoring["score"] >= config["min_score"]
+                and regime["regime"] in ("BULLISH", "MIXED")
+                and trend != "DOWNTREND"):
+            csp_option = find_best_csp(ticker, price, config)
+            if csp_option:
+                result["found_csp"] = True
+                csp_siz = size_csp(csp_option["bid"], csp_option["strike"], config)
+                result["csp_option"] = csp_option
+                result["csp_sizing"] = csp_siz
+
         return result
 
     except Exception as e:
@@ -1502,12 +1828,23 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
     also_qualified = [r for r in all_qualified[config["max_signals"]:]
                       if r.get("rsi", 0) < config["rsi_overbought"]][:5]
 
+    # CSP signals
+    csp_signals    = [r for r in results
+                      if r.get("csp_score", 0) >= config["min_score"]
+                      and r.get("csp_option") is not None
+                      and not r.get("earnings", {}).get("has_earnings")][:config["max_signals"]]
+
     # PUT signals
     put_signals    = [r for r in results
                       if r.get("put_score", 0) >= config["min_score"]
                       and r.get("put_option") is not None
                       and not r.get("put_hard_fail")
                       and not r.get("put_regime_block")][:config["max_signals"]]
+
+    # CSP signals
+    csp_signals    = [r for r in results
+                      if r.get("csp_option") is not None
+                      and r.get("csp_sizing", {}).get("contracts", 0) > 0][:config["max_signals"]]
 
     no_option      = [r for r in results
                       if r.get("score", 0) >= config["min_score"]
@@ -1539,6 +1876,7 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
         "regime":           regime,
         "signals":          signals,
         "put_signals":      put_signals,
+        "csp_signals":      csp_signals,
         "also_qualified":   also_qualified,
         "near_misses":      near_misses,
         "no_option":        no_option,
@@ -1904,10 +2242,154 @@ def print_results(scan: dict):
                 print(f"     Stop price : ${siz['stop_price']:.2f}")
                 print(f"     Limit price: ${round(siz['stop_price'] * 0.95, 2):.2f}  (5% below stop)")
 
+    # ── CSP Signals ─────────────────────────────────────────
+    csp_signals = scan.get("csp_signals", [])
+    if csp_signals:
+        print(f"\n{'━' * W}")
+        print(f"  CASH SECURED PUT SIGNALS — {len(csp_signals)} signal(s)")
+        print(f"  Execute on thinkorswim (requires margin/Level 3)")
+        print(f"{'━' * W}")
+
+        for i, r in enumerate(csp_signals, 1):
+            sym     = r["symbol"]
+            score   = r["csp_score"]
+            conv    = r["csp_conviction"]
+            opt     = r["csp_option"]
+            siz     = r["csp_sizing"]
+            scoring = r["csp_scoring"]
+
+            print(f"\n{'━' * W}")
+            print(f"  CSP #{i}  |  {sym} — SELL PUT  |  "
+                  f"Score: {score}/10  [{conv}]")
+            print(f"{'━' * W}")
+
+            print(f"\n  WHY THIS TRADE:")
+            for reason in scoring["reasons"]:
+                print(f"    {reason}")
+
+            print(f"\n  STOCK:")
+            print(f"    Price: ${r['price']:.2f}   RSI: {r['rsi']:.0f}   "
+                  f"Trend: {r['trend']}")
+            print(f"    MA50:  ${r['ma50']:.2f} ({r['pct_ma50']:+.1f}%)")
+
+            earn = r.get("earnings", {})
+            if earn.get("earnings_date"):
+                print(f"    Earnings: {earn['earnings_date']} "
+                      f"({earn['days_to_earnings']} days away)")
+
+            print(f"\n  OPTION (SELL THIS PUT):")
+            print(f"    {opt['expiry']} ${opt['strike']:.0f} PUT  |  {opt['dte']} DTE")
+            print(f"    Bid: ${opt['bid']:.2f}  Ask: ${opt['ask']:.2f}  "
+                  f"Mid: ${opt['mid']:.2f}  Spread: {opt['spread_pct']:.1f}%")
+            iv_str = f"{opt['iv']}%" if opt['iv'] else "N/A"
+            print(f"    IV: {iv_str}  |  Delta: {opt['delta']:.3f}  |  "
+                  f"Theta: ${opt['theta']*100:.2f}/day")
+            print(f"    Premium yield: {opt['premium_yield']:.2f}% of strike")
+
+            print(f"\n  POSITION (thinkorswim — cash secured):")
+            if siz and siz["contracts"] > 0:
+                print(f"    Contracts  : {siz['contracts']}")
+                print(f"    Premium    : ${siz['total_premium']:,.0f} collected upfront")
+                print(f"    Cash held  : ${siz['total_cash']:,.0f}  "
+                      f"({siz['pct_of_account']}% of account)")
+                print(f"    Breakeven  : ${siz['breakeven']:.2f} "
+                      f"(stock must stay above this)")
+            else:
+                print(f"    ⚠ Cash required (${opt['cash_required']:,.0f}) "
+                      f"exceeds available capital")
+
+            time_stop_date = (
+                datetime.strptime(opt["expiry"], "%Y-%m-%d")
+                - timedelta(days=config["time_stop_dte"])
+            ).strftime("%b %d")
+
+            print(f"\n  EXIT RULES:")
+            print(f"    ┌─ Let expire worthless if stock stays above "
+                  f"${opt['strike']:.0f} — keep full premium")
+            print(f"    ├─ Buy to close if premium drops 50% "
+                  f"(lock in profit early)")
+            print(f"    ├─ Buy to close if premium rises 200% "
+                  f"(stop loss — limit assignment risk)")
+            print(f"    └─ Time stop: {time_stop_date} — close if still open")
+            print(f"\n  ⚠  thinkorswim: Sell to Open | Put | "
+                  f"${opt['strike']:.0f} strike | {opt['expiry']} expiry")
+            print()
+
+    # ── CSP Signals ─────────────────────────────────────────
+    csp_signals = scan.get("csp_signals", [])
+    if csp_signals:
+        print(f"\n{'━' * W}")
+        print(f"  CASH SECURED PUT SIGNALS — {len(csp_signals)} signal(s)  "
+              f"| Execute on thinkorswim")
+        print(f"{'━' * W}")
+
+        for i, r in enumerate(csp_signals, 1):
+            sym     = r["symbol"]
+            opt     = r["csp_option"]
+            siz     = r["csp_sizing"]
+            scoring = r["csp_scoring"]
+            score   = r["csp_score"]
+            conv    = r["csp_conviction"]
+
+            print(f"\n{'━' * W}")
+            print(f"  CSP #{i}  |  {sym} — SELL PUT  |  "
+                  f"Score: {score}/10  [{conv}]")
+            print(f"{'━' * W}")
+
+            print(f"\n  WHY THIS TRADE:")
+            for reason in scoring["reasons"]:
+                print(f"    {reason}")
+
+            print(f"\n  STOCK:")
+            print(f"    Price: ${r['price']:.2f}   RSI: {r['rsi']:.0f}   "
+                  f"Trend: {r['trend']}")
+            print(f"    MA20:  ${r['ma20']:.2f} ({r['pct_ma20']:+.1f}%)   "
+                  f"MA50: ${r['ma50']:.2f} ({r['pct_ma50']:+.1f}%)")
+
+            earn = r.get("earnings", {})
+            if earn.get("earnings_date"):
+                print(f"    Earnings: {earn['earnings_date']} "
+                      f"({earn['days_to_earnings']} days away)")
+
+            print(f"\n  OPTION (SELL THIS PUT):")
+            print(f"    {opt['expiry']} ${opt['strike']:.0f} PUT  |  "
+                  f"{opt['dte']} DTE")
+            print(f"    Bid: ${opt['bid']:.2f}  Ask: ${opt['ask']:.2f}  "
+                  f"Spread: {opt['spread_pct']:.1f}%")
+            iv_str = f"{opt['iv']}%" if opt['iv'] else "N/A"
+            print(f"    IV: {iv_str}  |  Delta: {opt['delta']}  |  "
+                  f"Theta: ${opt['theta']*100:.2f}/day")
+            print(f"    Premium yield: {opt['premium_yield']:.2f}% of strike")
+
+            print(f"\n  POSITION (${config['account_size']:,.0f} account):")
+            print(f"    Contracts      : {siz['contracts']}")
+            print(f"    Premium collect: ${siz['total_premium']:,.0f}  "
+                  f"(received upfront)")
+            print(f"    Cash required  : ${siz['total_cash']:,.0f}  "
+                  f"({siz['pct_of_account']}% of account)")
+            print(f"    Breakeven      : ${siz['breakeven']:.2f}  "
+                  f"(stock must stay above this)")
+
+            print(f"\n  OUTCOMES:")
+            print(f"    ✓ Stock above ${opt['strike']:.0f} at expiry → "
+                  f"keep ${siz['total_premium']:,.0f} premium, done")
+            print(f"    ✗ Stock below ${opt['strike']:.0f} at expiry → "
+                  f"assigned, buy 100 shares at ${opt['strike']:.0f}")
+            print(f"      Effective cost basis: ${siz['breakeven']:.2f}/share")
+
+            print(f"\n  EXIT OPTIONS (before expiry):")
+            print(f"    Buy back at 50% profit : "
+                  f"${round(opt['bid'] * 0.50, 2):.2f}  (50% of premium collected)")
+            print(f"    Buy back to cut loss   : "
+                  f"${round(opt['bid'] * 2.0, 2):.2f}  (2× premium = max loss rule)")
+            print(f"\n  ⚠  Execute on thinkorswim — requires margin approval")
+            print()
+
     # ── Footer ──────────────────────────────────────────────
     print(f"{'─' * W}")
-    total_signals = len(signals) + len(put_signals)
-    print(f"  SCAN COMPLETE  |  {len(signals)} CALL + {len(put_signals)} PUT signal(s)  |  "
+    total_signals = len(signals) + len(put_signals) + len(csp_signals)
+    print(f"  SCAN COMPLETE  |  {len(signals)} CALL + {len(put_signals)} PUT + "
+          f"{len(csp_signals)} CSP signal(s)  |  "
           f"{scan['scanned']} symbols scanned")
     print(f"  Remember: No trade is always a valid choice.\n")
 
