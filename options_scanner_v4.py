@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.21"
+VERSION = "4.22"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -1839,7 +1839,7 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
     csp_signals    = [r for r in results
                       if r.get("csp_option") is not None
                       and r.get("csp_sizing", {}).get("contracts", 0) > 0
-                      and r.get("rsi", 100) <= 69
+                      and r.get("rsi", 100) < 70
                       and not r.get("earnings", {}).get("has_earnings")][:config["max_signals"]]
 
     no_option      = [r for r in results
@@ -2557,6 +2557,356 @@ def show_journal(status: str = "ALL") -> None:
             print(f"    Notes: {r['notes']}")
 
     print(f"\n{'─' * W}\n")
+
+
+
+# ─────────────────────────────────────────────────────────────
+# BACKTESTER — v4 scoring system
+# ─────────────────────────────────────────────────────────────
+
+def run_backtest(
+    symbols:    list  = None,
+    start_date: str   = "2023-01-01",
+    end_date:   str   = "2024-12-31",
+    min_score:  int   = 6,
+    hold_days:  int   = 17,
+    stop_pct:   float = 0.35,
+    target_pct: float = 0.75,
+    slippage:   float = 0.05,
+    config:     dict  = CONFIG,
+    verbose:    bool  = True,
+) -> pd.DataFrame:
+    """
+    Backtest the v4 CALL scoring system on historical data.
+
+    Simulates trades using stock price moves and estimated delta.
+    No actual historical options prices — uses simplified P&L model.
+
+    Args:
+        symbols:    List of tickers. Defaults to ALL_SYMBOLS.
+        start_date: Backtest start (YYYY-MM-DD)
+        end_date:   Backtest end (YYYY-MM-DD)
+        min_score:  Minimum score to generate a signal
+        hold_days:  Max days to hold before time stop
+        stop_pct:   Stop loss on option premium
+        target_pct: Profit target on option premium
+        slippage:   Execution slippage on entry
+        config:     Scanner config dict
+        verbose:    Print progress
+
+    Returns:
+        DataFrame of all trades with P&L
+    """
+    if symbols is None:
+        symbols = ALL_SYMBOLS
+
+    # Fetch SPY for regime — use warmup period before start
+    warmup_start = (pd.to_datetime(start_date) - pd.Timedelta(days=300)).strftime("%Y-%m-%d")
+
+    if verbose:
+        print(f"\n{'='*62}")
+        print(f"  BACKTEST — v4 Scoring System")
+        print(f"  Period: {start_date} to {end_date}")
+        print(f"  Symbols: {len(symbols)}  |  Min score: {min_score}/12")
+        print(f"  Hold: {hold_days}d  |  Stop: -{int(stop_pct*100)}%  |  Target: +{int(target_pct*100)}%")
+        print(f"{'='*62}\n")
+
+    # Fetch QQQ for regime
+    if verbose:
+        print("  Fetching QQQ regime data...")
+    qqq_hist = yf.Ticker("QQQ").history(start=warmup_start, end=end_date)
+
+    all_trades = []
+
+    for sym in symbols:
+        if verbose:
+            print(f"  {sym}...", end=" ", flush=True)
+
+        try:
+            hist_full = yf.Ticker(sym).history(start=warmup_start, end=end_date)
+            if hist_full.empty or len(hist_full) < 60:
+                if verbose:
+                    print("skipped (no data)")
+                continue
+
+            # Get just the backtest period
+            bt_start = pd.to_datetime(start_date)
+            bt_dates  = hist_full.index[hist_full.index >= bt_start]
+
+            if len(bt_dates) < 30:
+                if verbose:
+                    print("skipped (insufficient range)")
+                continue
+
+            trade_count = 0
+            i = 0
+            while i < len(bt_dates) - hold_days - 5:
+                current_date = bt_dates[i]
+
+                # Slice history up to current date (no lookahead)
+                hist_slice = hist_full.loc[:current_date]
+                if len(hist_slice) < 60:
+                    i += 1
+                    continue
+
+                close  = hist_slice["Close"]
+                volume = hist_slice["Volume"]
+                price  = float(close.iloc[-1])
+
+                # Technical indicators
+                rsi_series = compute_rsi(close)
+                rsi = float(rsi_series.iloc[-1])
+                if np.isnan(rsi):
+                    i += 1
+                    continue
+
+                ma_short = close.rolling(CONFIG["ma_short"]).mean()
+                ma_long  = close.rolling(CONFIG["ma_long"]).mean()
+                ma_s     = float(ma_short.iloc[-1])
+                ma_l     = float(ma_long.iloc[-1])
+                trend    = get_trend(price, ma_s, ma_l)
+                pct_ma50 = round((price - ma_l) / ma_l * 100, 1)
+
+                # Volume
+                vol_data = analyze_volume(close, volume, CONFIG["vol_avg_days"])
+
+                # Weekly (simplified — use 5-day rolling for speed)
+                weekly_trend = "MIXED"  # simplified for backtest speed
+
+                # MACD and Bollinger
+                macd_data = compute_macd(close)
+                bb_data   = analyze_bollinger(close)
+
+                # Regime from QQQ
+                qqq_slice = qqq_hist.loc[:current_date]
+                regime_str = "UNKNOWN"
+                if len(qqq_slice) >= 210:
+                    rd = get_regime_from_history(qqq_slice["Close"],
+                                                 config["regime_ma_short"] if "regime_ma_short" in config else 50,
+                                                 config["regime_ma_long"]  if "regime_ma_long"  in config else 200)
+                    if rd:
+                        regime_str = rd["regime"]
+
+                # Score
+                scoring = score_call_setup(
+                    regime        = regime_str,
+                    rsi           = rsi,
+                    trend         = trend,
+                    vol_score     = vol_data["score"],
+                    weekly_trend  = weekly_trend,
+                    pct_from_ma50 = pct_ma50,
+                    close         = close,
+                    rsi_series    = rsi_series,
+                    macd          = macd_data,
+                    bollinger     = bb_data,
+                )
+
+                score = scoring["score"]
+
+                # Hard disqualifiers
+                if rsi >= 75:
+                    i += 1
+                    continue
+                if rsi >= CONFIG["rsi_overbought"] and pct_ma50 > 10:
+                    i += 1
+                    continue
+                if pct_ma50 > 15 and trend == "UPTREND":
+                    i += 1
+                    continue
+
+                if score < min_score:
+                    i += 1
+                    continue
+
+                # Simulate trade
+                entry_price_stock = price
+                estimated_premium = price * 0.03 * (1 + slippage)
+                delta             = 0.60  # approximate ITM delta
+
+                # Find exit
+                exit_idx  = None
+                exit_reason = f"TIME ({hold_days}d)"
+                pnl_pct     = 0.0
+
+                for j in range(1, hold_days + 1):
+                    next_idx = bt_dates.get_loc(current_date) + j
+                    if next_idx >= len(bt_dates):
+                        break
+                    next_date  = bt_dates[next_idx]
+                    next_price = float(hist_full.loc[next_date, "Close"])
+                    stock_move = next_price - entry_price_stock
+
+                    # Estimate option move
+                    weeks_held      = j / 5.0
+                    theta_decay     = -0.02 * weeks_held
+                    option_change   = (stock_move * delta) / estimated_premium
+                    est_pnl         = option_change + theta_decay
+
+                    if est_pnl <= -stop_pct:
+                        pnl_pct     = -stop_pct
+                        exit_reason = "STOP LOSS"
+                        exit_idx    = next_idx
+                        break
+                    elif est_pnl >= target_pct:
+                        pnl_pct     = target_pct
+                        exit_reason = "PROFIT TARGET"
+                        exit_idx    = next_idx
+                        break
+
+                if exit_idx is None:
+                    # Time stop
+                    exit_idx = min(bt_dates.get_loc(current_date) + hold_days,
+                                   len(bt_dates) - 1)
+                    next_price = float(hist_full.loc[bt_dates[exit_idx], "Close"])
+                    stock_move = next_price - entry_price_stock
+                    weeks_held = hold_days / 5.0
+                    pnl_pct    = (stock_move * delta) / estimated_premium - 0.02 * weeks_held
+                    pnl_pct    = max(-stop_pct, min(target_pct, pnl_pct))
+
+                pnl_dollars = round(estimated_premium * 100 * pnl_pct, 2)
+
+                all_trades.append({
+                    "symbol":       sym,
+                    "entry_date":   current_date.strftime("%Y-%m-%d"),
+                    "exit_date":    bt_dates[exit_idx].strftime("%Y-%m-%d"),
+                    "score":        score,
+                    "conviction":   scoring["conviction"],
+                    "regime":       regime_str,
+                    "trend":        trend,
+                    "rsi":          round(rsi, 1),
+                    "macd_bull":    macd_data.get("bullish", False),
+                    "bb_signal":    bb_data.get("signal", "UNKNOWN"),
+                    "entry_stock":  round(entry_price_stock, 2),
+                    "exit_stock":   round(next_price, 2),
+                    "pnl_pct":      round(pnl_pct * 100, 1),
+                    "pnl_dollars":  pnl_dollars,
+                    "exit_reason":  exit_reason,
+                    "hold_days":    j if exit_reason != f"TIME ({hold_days}d)" else hold_days,
+                })
+
+                trade_count += 1
+                # Skip ahead past this trade
+                i = exit_idx + 1
+
+            if verbose:
+                print(f"{trade_count} trades")
+
+        except Exception as e:
+            if verbose:
+                print(f"error ({e})")
+
+    if not all_trades:
+        print("\n  No trades generated.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_trades)
+    df["entry_date"] = pd.to_datetime(df["entry_date"])
+    df["win"]        = df["pnl_dollars"] > 0
+    return df
+
+
+def print_backtest_results(df: pd.DataFrame):
+    """Print clean backtest summary with score-band breakdown."""
+    if df.empty:
+        print("No trades to analyze.")
+        return
+
+    W = 62
+    total  = len(df)
+    wins   = df["win"].sum()
+    losses = total - wins
+    wr     = round(wins / total * 100, 1)
+    total_pnl = round(df["pnl_dollars"].sum(), 2)
+    avg_win   = round(df[df["win"]]["pnl_dollars"].mean(), 2) if wins > 0 else 0
+    avg_loss  = round(df[~df["win"]]["pnl_dollars"].mean(), 2) if losses > 0 else 0
+    gross_p   = df[df["win"]]["pnl_dollars"].sum()
+    gross_l   = abs(df[~df["win"]]["pnl_dollars"].sum())
+    pf        = round(gross_p / gross_l, 2) if gross_l > 0 else float("inf")
+
+    df_sorted = df.sort_values("entry_date")
+    df_sorted["cum_pnl"]  = df_sorted["pnl_dollars"].cumsum()
+    df_sorted["run_max"]  = df_sorted["cum_pnl"].cummax()
+    df_sorted["drawdown"] = df_sorted["cum_pnl"] - df_sorted["run_max"]
+    max_dd = round(df_sorted["drawdown"].min(), 2)
+
+    print(f"\n{'='*W}")
+    print(f"  BACKTEST RESULTS — v4 Scoring System")
+    print(f"{'='*W}")
+    print(f"  Total trades   : {total}")
+    print(f"  Win rate       : {wr}%  ({wins}W / {losses}L)")
+    print(f"  Total P&L      : ${total_pnl:+,.2f}")
+    print(f"  Avg win        : ${avg_win:+,.2f}")
+    print(f"  Avg loss       : ${avg_loss:+,.2f}")
+    print(f"  Profit factor  : {pf}")
+    print(f"  Max drawdown   : ${max_dd:,.2f}")
+
+    if wr >= 60 and pf >= 2.0:
+        rating = "EXCELLENT"
+    elif wr >= 50 and pf >= 1.5:
+        rating = "GOOD"
+    elif wr >= 40 and pf >= 1.0:
+        rating = "ACCEPTABLE"
+    else:
+        rating = "NEEDS IMPROVEMENT"
+    print(f"\n  Strategy rating: {rating}")
+
+    # Score band breakdown
+    print(f"\n{'─'*W}")
+    print(f"  BY SCORE BAND:")
+    print(f"  {'Score':>6}  {'Trades':>6}  {'Win%':>6}  {'P&L':>10}  {'P.Factor':>9}")
+    for score in sorted(df["score"].unique()):
+        band = df[df["score"] == score]
+        bw   = band["win"].sum()
+        bwr  = round(bw / len(band) * 100, 1)
+        bpnl = round(band["pnl_dollars"].sum(), 2)
+        bgp  = band[band["win"]]["pnl_dollars"].sum()
+        bgl  = abs(band[~band["win"]]["pnl_dollars"].sum())
+        bpf  = round(bgp / bgl, 2) if bgl > 0 else float("inf")
+        print(f"  {score:>6}  {len(band):>6}  {bwr:>5.1f}%  "
+              f"${bpnl:>9,.2f}  {bpf:>9}")
+
+    # By regime
+    print(f"\n{'─'*W}")
+    print(f"  BY MARKET REGIME:")
+    for reg in ["BULLISH", "MIXED", "BEARISH"]:
+        band = df[df["regime"] == reg]
+        if band.empty:
+            continue
+        bwr  = round(band["win"].mean() * 100, 1)
+        bpnl = round(band["pnl_dollars"].sum(), 2)
+        print(f"  {reg:<10} {len(band):>4} trades  {bwr:>5.1f}% WR  "
+              f"${bpnl:>9,.2f}")
+
+    # By exit reason
+    print(f"\n{'─'*W}")
+    print(f"  BY EXIT REASON:")
+    for reason, grp in df.groupby("exit_reason"):
+        gwr  = round(grp["win"].mean() * 100, 1)
+        gpnl = round(grp["pnl_dollars"].sum(), 2)
+        print(f"  {reason:<20} {len(grp):>4} trades  {gwr:>5.1f}% WR  "
+              f"${gpnl:>9,.2f}")
+
+    # MACD filter impact
+    print(f"\n{'─'*W}")
+    print(f"  MACD BULLISH FILTER IMPACT:")
+    for bull in [True, False]:
+        band = df[df["macd_bull"] == bull]
+        if band.empty:
+            continue
+        label = "MACD Bullish" if bull else "MACD Bearish"
+        bwr   = round(band["win"].mean() * 100, 1)
+        bpnl  = round(band["pnl_dollars"].sum(), 2)
+        print(f"  {label:<15} {len(band):>4} trades  {bwr:>5.1f}% WR  "
+              f"${bpnl:>9,.2f}")
+
+    print(f"\n{'='*W}\n")
+
+
+def export_backtest(df: pd.DataFrame,
+                    filename: str = "backtest_v4.csv"):
+    """Export backtest results to CSV."""
+    df.to_csv(filename, index=False)
+    print(f"  Exported {len(df)} trades → {filename}")
 
 
 if __name__ == "__main__":
