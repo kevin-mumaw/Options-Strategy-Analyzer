@@ -1961,7 +1961,7 @@ def print_results(scan: dict):
 
     # ── Header ──────────────────────────────────────────────
     print("\n" + "█" * W)
-    print(f"  OPTIONS SCANNER — Phase 1  v{VERSION}  |  {scan['scan_date']}")
+    print(f"  OPTIONS SCANNER — Phase 1|2|3  v{VERSION}  |  {scan['scan_date']}")
     print(f"  Account: ${config['account_size']:,.0f}  |  "
           f"Scanned: {scan['scanned']} symbols")
     print("█" * W)
