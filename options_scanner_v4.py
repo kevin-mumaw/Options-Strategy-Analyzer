@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.24"
+VERSION = "4.25"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -83,8 +83,9 @@ CONFIG = {
     "max_positions":      2,           # max open positions at $2k
 
     # Signal gate
-    "min_score":          6,           # minimum score out of 10
+    "min_score":          7,           # raised from 6 — backtest shows 7+ has 2.58 profit factor
     "max_signals":        5,           # cap output at top 5 signals
+    "calls_bullish_only": True,        # backtest shows MIXED regime loses money on CALLs
 
     # Technical thresholds
     "rsi_oversold":       35,
@@ -466,21 +467,17 @@ def score_call_setup(
         breakdown["support"] = 0
         reasons.append(f"~ Support [0/1] Not near key support ({pct_from_ma50:+.1f}% from MA50)")
 
-    # ── 7. MACD (0-1) ───────────────────────────────────────
+    # ── 7. MACD (informational only — not scored) ───────────
+    # Backtest showed MACD bullish is NOT predictive for CALL entries.
+    # Displayed for context but does not affect score.
     if macd and macd.get("macd") is not None:
-        if macd["bullish"]:
-            breakdown["macd"] = 1
-            reasons.append(
-                f"✓ MACD    [1/1] Bullish — MACD {macd['macd']:.3f} above signal {macd['signal']:.3f}"
-            )
-        else:
-            breakdown["macd"] = 0
-            reasons.append(
-                f"✗ MACD    [0/1] Bearish — MACD {macd['macd']:.3f} below signal {macd['signal']:.3f}"
-            )
-    else:
-        breakdown["macd"] = 0
-        reasons.append("~ MACD    [0/1] Insufficient data")
+        macd_label = "Bullish" if macd["bullish"] else "Bearish"
+        macd_icon  = "~"
+        reasons.append(
+            f"{macd_icon} MACD    [info] {macd_label} — "
+            f"MACD {macd['macd']:.3f} vs signal {macd['signal']:.3f}"
+        )
+    breakdown["macd"] = 0  # not scored
 
     # ── 8. Bollinger Bands (0-1) ────────────────────────────
     if bollinger and bollinger.get("signal") != "UNKNOWN":
@@ -1702,44 +1699,52 @@ def scan_symbol(symbol: str, regime: dict,
         if hard_fail:
             pass  # still continue to check PUT
         elif score >= config["min_score"]:
-            option = find_best_call(ticker, price, config)
-            if option:
-                result["found_option"] = True
-                sizing = size_position(option["ask"], score, config)
-                result["option"] = option
-                result["sizing"] = sizing
+            # BULLISH-only filter for CALLs — backtest shows MIXED regime loses money
+            call_regime_ok = (
+                not config.get("calls_bullish_only", False)
+                or regime["regime"] == "BULLISH"
+            )
+            if not call_regime_ok:
+                result["hard_fail"] = f"MIXED/BEARISH regime — CALL signals require BULLISH market"
+            else:
+                option = find_best_call(ticker, price, config)
+                if option:
+                    result["found_option"] = True
+                    sizing = size_position(option["ask"], score, config)
+                    result["option"] = option
+                    result["sizing"] = sizing
 
-                if sizing["contracts"] == 0:
-                    short_leg = find_spread_call(
-                        ticker, price,
-                        option["strike"], option["expiry"], option["dte"], config
-                    )
-                    if short_leg:
-                        spread_siz = size_spread(
-                            option["ask"], short_leg["bid"],
-                            option["strike"], short_leg["strike"],
-                            score, config
+                    if sizing["contracts"] == 0:
+                        short_leg = find_spread_call(
+                            ticker, price,
+                            option["strike"], option["expiry"], option["dte"], config
                         )
-                        result["spread"]     = short_leg
-                        result["spread_siz"] = spread_siz
+                        if short_leg:
+                            spread_siz = size_spread(
+                                option["ask"], short_leg["bid"],
+                                option["strike"], short_leg["strike"],
+                                score, config
+                            )
+                            result["spread"]     = short_leg
+                            result["spread_siz"] = spread_siz
 
-                        if spread_siz and spread_siz["reward_risk"] < config["min_reward_risk"]:
-                            result["rr_fail"] = spread_siz["reward_risk"]
-                            result["option"]  = None
+                            if spread_siz and spread_siz["reward_risk"] < config["min_reward_risk"]:
+                                result["rr_fail"] = spread_siz["reward_risk"]
+                                result["option"]  = None
+                        else:
+                            result["spread"]     = None
+                            result["spread_siz"] = None
                     else:
                         result["spread"]     = None
                         result["spread_siz"] = None
-                else:
-                    result["spread"]     = None
-                    result["spread_siz"] = None
 
-                    if sizing["contracts"] > 0:
-                        target_gain = round(sizing["target_price"] - option["ask"], 2)
-                        risk        = round(option["ask"] - sizing["stop_price"], 2)
-                        rr          = round(target_gain / risk, 2) if risk > 0 else 0
-                        if rr < config["min_reward_risk"]:
-                            result["rr_fail"] = rr
-                            result["option"]  = None
+                        if sizing["contracts"] > 0:
+                            target_gain = round(sizing["target_price"] - option["ask"], 2)
+                            risk        = round(option["ask"] - sizing["stop_price"], 2)
+                            rr          = round(target_gain / risk, 2) if risk > 0 else 0
+                            if rr < config["min_reward_risk"]:
+                                result["rr_fail"] = rr
+                                result["option"]  = None
 
         # PUT option lookup
         if not put_hard_fail and not put_regime_block and put_score >= config["min_score"]:
