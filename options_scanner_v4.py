@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.25"
+VERSION = "4.26"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -86,6 +86,12 @@ CONFIG = {
     "min_score":          7,           # raised from 6 — backtest shows 7+ has 2.58 profit factor
     "max_signals":        5,           # cap output at top 5 signals
     "calls_bullish_only": True,        # backtest shows MIXED regime loses money on CALLs
+
+    # Phase 3 — Regime-aware posture shifts
+    "mixed_min_score":    9,           # MIXED regime requires higher conviction for CALLs
+    "bearish_calls_off":  True,        # no CALL signals in BEARISH regime
+    "bearish_csp_off":    True,        # no CSP signals in BEARISH regime
+    "recovery_calls_off": True,        # no CALLs when transitioning BEARISH→MIXED
 
     # Technical thresholds
     "rsi_oversold":       35,
@@ -250,16 +256,18 @@ def analyze_bollinger(series: pd.Series,
 def analyze_regime(config: dict = CONFIG) -> dict:
     """
     Classify the broad market regime using QQQ vs its 50 and 200-day MAs.
+    Also tracks regime direction (improving/deteriorating) for Phase 3 posture shifts.
     Returns regime dict with all context needed for display and scoring.
     """
     result = {
-        "regime":   "UNKNOWN",
-        "symbol":   config["regime_symbol"],
-        "price":    None,
-        "ma50":     None,
-        "ma200":    None,
-        "pct_ma50": None,
-        "detail":   "Could not fetch regime data",
+        "regime":     "UNKNOWN",
+        "direction":  "UNKNOWN",   # IMPROVING, DETERIORATING, STABLE
+        "symbol":     config["regime_symbol"],
+        "price":      None,
+        "ma50":       None,
+        "ma200":      None,
+        "pct_ma50":   None,
+        "detail":     "Could not fetch regime data",
     }
     try:
         hist  = yf.Ticker(config["regime_symbol"]).history(period="2y")
@@ -280,8 +288,33 @@ def analyze_regime(config: dict = CONFIG) -> dict:
         else:
             regime = "MIXED"
 
+        # Regime direction — compare current vs 10 days ago
+        direction = "STABLE"
+        if len(close) >= 220:
+            price_10d  = float(close.iloc[-11])
+            ma50_10d   = float(close.rolling(config["regime_ma_short"]).mean().iloc[-11])
+            ma200_10d  = float(close.rolling(config["regime_ma_long"]).mean().iloc[-11])
+            if price_10d > ma50_10d > ma200_10d:
+                prev_regime = "BULLISH"
+            elif price_10d < ma50_10d < ma200_10d:
+                prev_regime = "BEARISH"
+            else:
+                prev_regime = "MIXED"
+
+            if regime == "BULLISH" and prev_regime in ("MIXED", "BEARISH"):
+                direction = "IMPROVING"
+            elif regime == "MIXED" and prev_regime == "BEARISH":
+                direction = "IMPROVING"
+            elif regime == "BEARISH" and prev_regime in ("MIXED", "BULLISH"):
+                direction = "DETERIORATING"
+            elif regime == "MIXED" and prev_regime == "BULLISH":
+                direction = "DETERIORATING"
+            else:
+                direction = "STABLE"
+
         result.update({
             "regime":    regime,
+            "direction": direction,
             "price":     price,
             "ma50":      ma50,
             "ma200":     ma200,
@@ -1699,13 +1732,34 @@ def scan_symbol(symbol: str, regime: dict,
         if hard_fail:
             pass  # still continue to check PUT
         elif score >= config["min_score"]:
-            # BULLISH-only filter for CALLs — backtest shows MIXED regime loses money
-            call_regime_ok = (
-                not config.get("calls_bullish_only", False)
-                or regime["regime"] == "BULLISH"
-            )
-            if not call_regime_ok:
-                result["hard_fail"] = f"MIXED/BEARISH regime — CALL signals require BULLISH market"
+            regime_name      = regime["regime"]
+            regime_direction = regime.get("direction", "STABLE")
+
+            # ── Phase 3 — Regime posture shifts ───────────────
+            # BEARISH regime — no CALLs
+            if config.get("bearish_calls_off", True) and regime_name == "BEARISH":
+                result["hard_fail"] = "BEARISH regime — CALL signals off, watch for PUT setups"
+
+            # MIXED deteriorating (was BULLISH, now MIXED) — no CALLs
+            elif (config.get("calls_bullish_only", False)
+                  and regime_name == "MIXED"
+                  and regime_direction == "DETERIORATING"):
+                result["hard_fail"] = "Market deteriorating (BULLISH→MIXED) — no CALL entries until BULLISH confirmed"
+
+            # MIXED stable — require higher score
+            elif (config.get("calls_bullish_only", False)
+                  and regime_name == "MIXED"
+                  and score < config.get("mixed_min_score", 9)):
+                result["hard_fail"] = (f"MIXED regime — CALL requires score "
+                                       f"{config.get('mixed_min_score', 9)}+ "
+                                       f"(scored {score})")
+
+            # MIXED improving (was BEARISH, now MIXED) — still no CALLs
+            elif (config.get("recovery_calls_off", True)
+                  and regime_name == "MIXED"
+                  and regime_direction == "IMPROVING"):
+                result["hard_fail"] = "Market recovering (BEARISH→MIXED) — wait for BULLISH confirmation before CALLs"
+
             else:
                 option = find_best_call(ticker, price, config)
                 if option:
@@ -1763,10 +1817,14 @@ def scan_symbol(symbol: str, regime: dict,
                         result["put_rr_fail"] = rr
                         result["put_option"]  = None
 
-        # CSP option lookup — only in BULLISH or MIXED regime
-        if (not earnings["has_earnings"]
+        # CSP option lookup — BULLISH or MIXED only, never BEARISH
+        csp_regime_ok = (
+            not config.get("bearish_csp_off", True)
+            or regime["regime"] in ("BULLISH", "MIXED")
+        )
+        if (csp_regime_ok
+                and not earnings["has_earnings"]
                 and csp_scoring["score"] >= config["min_score"]
-                and regime["regime"] in ("BULLISH", "MIXED")
                 and trend != "DOWNTREND"):
             csp_option = find_best_csp(ticker, price, config)
             if csp_option:
@@ -1915,11 +1973,14 @@ def print_results(scan: dict):
     print(f"  {regime['detail']}")
 
     # ── Plain English market read ────────────────────────────
-    r_name   = regime["regime"]
-    pct_ma50 = regime.get("pct_ma50", 0) or 0
+    r_name    = regime["regime"]
+    r_dir     = regime.get("direction", "STABLE")
+    pct_ma50  = regime.get("pct_ma50", 0) or 0
 
     if r_name == "BULLISH":
-        if pct_ma50 > 15:
+        if r_dir == "IMPROVING":
+            summary = "🔄 Market recovering to BULLISH — early entries acceptable, watch for confirmation"
+        elif pct_ma50 > 15:
             summary = "Market significantly extended — wait for pullback before new entries"
         elif pct_ma50 > 10:
             summary = "Market extended above MA50 — proceed only with highest conviction setups"
@@ -1928,9 +1989,17 @@ def print_results(scan: dict):
         else:
             summary = "Market near MA50 support — good entry conditions if setups qualify"
     elif r_name == "MIXED":
-        summary = "Market transitional — raise the bar, use smaller size, avoid marginal setups"
+        if r_dir == "DETERIORATING":
+            summary = "⚠️  Market deteriorating (BULLISH→MIXED) — no new CALL entries, protect open positions"
+        elif r_dir == "IMPROVING":
+            summary = "⚠️  Market recovering (BEARISH→MIXED) — wait for BULLISH confirmation before CALLs"
+        else:
+            summary = "⚠️  Market transitional — score 9+ required for CALLs, PUT and CSP signals active"
     elif r_name == "BEARISH":
-        summary = "Market in downtrend — avoid new CALL entries, protect capital"
+        if r_dir == "DETERIORATING":
+            summary = "🔴 Market breaking down — no CALLs, no CSPs. PUT signals only. Protect capital."
+        else:
+            summary = "🔴 Market in downtrend — no CALLs, no CSPs. PUT signals only."
     else:
         summary = "Market direction unclear — wait for confirmation"
 
