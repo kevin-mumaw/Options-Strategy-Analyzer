@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.23"
+VERSION = "4.24"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -2694,11 +2694,16 @@ def run_backtest(
                 qqq_slice = qqq_hist.loc[:current_date_tz]
                 regime_str = "UNKNOWN"
                 if len(qqq_slice) >= 210:
-                    rd = get_regime_from_history(qqq_slice["Close"],
-                                                 config["regime_ma_short"] if "regime_ma_short" in config else 50,
-                                                 config["regime_ma_long"]  if "regime_ma_long"  in config else 200)
-                    if rd:
-                        regime_str = rd["regime"]
+                    ma_short_qqq = qqq_slice["Close"].rolling(50).mean()
+                    ma_long_qqq  = qqq_slice["Close"].rolling(200).mean()
+                    price_qqq    = float(qqq_slice["Close"].iloc[-1])
+                    mas          = float(ma_short_qqq.iloc[-1])
+                    mal          = float(ma_long_qqq.iloc[-1])
+                    if not (np.isnan(mas) or np.isnan(mal)):
+                        regime_str = get_trend(price_qqq, mas, mal).replace(
+                            "UPTREND", "BULLISH").replace(
+                            "DOWNTREND", "BEARISH").replace(
+                            "MIXED", "MIXED")
 
                 # Score
                 scoring = score_call_setup(
