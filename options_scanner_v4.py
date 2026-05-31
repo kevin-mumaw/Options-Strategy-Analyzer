@@ -1839,7 +1839,7 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
     csp_signals    = [r for r in results
                       if r.get("csp_option") is not None
                       and r.get("csp_sizing", {}).get("contracts", 0) > 0
-                      and r.get("rsi", 100) < 70
+                      and r.get("rsi", 100) <= 69
                       and not r.get("earnings", {}).get("has_earnings")][:config["max_signals"]]
 
     no_option      = [r for r in results
