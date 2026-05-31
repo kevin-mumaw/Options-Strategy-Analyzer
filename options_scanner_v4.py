@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.22"
+VERSION = "4.23"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -2630,8 +2630,16 @@ def run_backtest(
                 continue
 
             # Get just the backtest period
-            bt_start = pd.to_datetime(start_date)
-            bt_dates  = hist_full.index[hist_full.index >= bt_start]
+            bt_start = pd.to_datetime(start_date).tz_localize("America/New_York")
+            bt_end   = pd.to_datetime(end_date).tz_localize("America/New_York")
+
+            # Normalize index timezone
+            if hist_full.index.tz is None:
+                hist_full.index = hist_full.index.tz_localize("America/New_York")
+
+            bt_dates = hist_full.index[
+                (hist_full.index >= bt_start) & (hist_full.index <= bt_end)
+            ]
 
             if len(bt_dates) < 30:
                 if verbose:
@@ -2678,7 +2686,12 @@ def run_backtest(
                 bb_data   = analyze_bollinger(close)
 
                 # Regime from QQQ
-                qqq_slice = qqq_hist.loc[:current_date]
+                # Normalize QQQ index timezone
+                if qqq_hist.index.tz is None:
+                    qqq_hist.index = qqq_hist.index.tz_localize("America/New_York")
+                current_date_tz = current_date if current_date.tzinfo else \
+                    current_date.tz_localize("America/New_York")
+                qqq_slice = qqq_hist.loc[:current_date_tz]
                 regime_str = "UNKNOWN"
                 if len(qqq_slice) >= 210:
                     rd = get_regime_from_history(qqq_slice["Close"],
