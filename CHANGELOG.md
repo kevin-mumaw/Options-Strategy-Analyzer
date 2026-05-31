@@ -1,6 +1,10 @@
 # Changelog
 All notable changes to the Options Strategy Analyzer project.
 
+## [4.21.0] - 2026-05-30
+### Fixed
+- CSP RSI filter tightened to <= 69 (was < 70, allowing RSI exactly 70 through)
+
 ## [4.17.0] - 2026-05-27
 ### Added — Phase 2: PUT Signal Logic
 - score_put_setup() — 12-point bearish scoring system
