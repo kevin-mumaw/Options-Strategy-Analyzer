@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.20"
+VERSION = "4.21"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
