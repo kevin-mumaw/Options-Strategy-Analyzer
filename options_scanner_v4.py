@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.19"
+VERSION = "4.20"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -1828,12 +1828,6 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
     also_qualified = [r for r in all_qualified[config["max_signals"]:]
                       if r.get("rsi", 0) < config["rsi_overbought"]][:5]
 
-    # CSP signals
-    csp_signals    = [r for r in results
-                      if r.get("csp_score", 0) >= config["min_score"]
-                      and r.get("csp_option") is not None
-                      and not r.get("earnings", {}).get("has_earnings")][:config["max_signals"]]
-
     # PUT signals
     put_signals    = [r for r in results
                       if r.get("put_score", 0) >= config["min_score"]
@@ -1841,10 +1835,12 @@ def run_scan(symbols: list = None, config: dict = CONFIG,
                       and not r.get("put_hard_fail")
                       and not r.get("put_regime_block")][:config["max_signals"]]
 
-    # CSP signals
+    # CSP signals — exclude overbought stocks (RSI >= 70 is too risky for selling puts)
     csp_signals    = [r for r in results
                       if r.get("csp_option") is not None
-                      and r.get("csp_sizing", {}).get("contracts", 0) > 0][:config["max_signals"]]
+                      and r.get("csp_sizing", {}).get("contracts", 0) > 0
+                      and r.get("rsi", 100) < 70
+                      and not r.get("earnings", {}).get("has_earnings")][:config["max_signals"]]
 
     no_option      = [r for r in results
                       if r.get("score", 0) >= config["min_score"]
@@ -2241,79 +2237,6 @@ def print_results(scan: dict):
                 print(f"\n  ⚠  STOP ORDER — Robinhood: use STOP LIMIT (not limit sell)")
                 print(f"     Stop price : ${siz['stop_price']:.2f}")
                 print(f"     Limit price: ${round(siz['stop_price'] * 0.95, 2):.2f}  (5% below stop)")
-
-    # ── CSP Signals ─────────────────────────────────────────
-    csp_signals = scan.get("csp_signals", [])
-    if csp_signals:
-        print(f"\n{'━' * W}")
-        print(f"  CASH SECURED PUT SIGNALS — {len(csp_signals)} signal(s)")
-        print(f"  Execute on thinkorswim (requires margin/Level 3)")
-        print(f"{'━' * W}")
-
-        for i, r in enumerate(csp_signals, 1):
-            sym     = r["symbol"]
-            score   = r["csp_score"]
-            conv    = r["csp_conviction"]
-            opt     = r["csp_option"]
-            siz     = r["csp_sizing"]
-            scoring = r["csp_scoring"]
-
-            print(f"\n{'━' * W}")
-            print(f"  CSP #{i}  |  {sym} — SELL PUT  |  "
-                  f"Score: {score}/10  [{conv}]")
-            print(f"{'━' * W}")
-
-            print(f"\n  WHY THIS TRADE:")
-            for reason in scoring["reasons"]:
-                print(f"    {reason}")
-
-            print(f"\n  STOCK:")
-            print(f"    Price: ${r['price']:.2f}   RSI: {r['rsi']:.0f}   "
-                  f"Trend: {r['trend']}")
-            print(f"    MA50:  ${r['ma50']:.2f} ({r['pct_ma50']:+.1f}%)")
-
-            earn = r.get("earnings", {})
-            if earn.get("earnings_date"):
-                print(f"    Earnings: {earn['earnings_date']} "
-                      f"({earn['days_to_earnings']} days away)")
-
-            print(f"\n  OPTION (SELL THIS PUT):")
-            print(f"    {opt['expiry']} ${opt['strike']:.0f} PUT  |  {opt['dte']} DTE")
-            print(f"    Bid: ${opt['bid']:.2f}  Ask: ${opt['ask']:.2f}  "
-                  f"Mid: ${opt['mid']:.2f}  Spread: {opt['spread_pct']:.1f}%")
-            iv_str = f"{opt['iv']}%" if opt['iv'] else "N/A"
-            print(f"    IV: {iv_str}  |  Delta: {opt['delta']:.3f}  |  "
-                  f"Theta: ${opt['theta']*100:.2f}/day")
-            print(f"    Premium yield: {opt['premium_yield']:.2f}% of strike")
-
-            print(f"\n  POSITION (thinkorswim — cash secured):")
-            if siz and siz["contracts"] > 0:
-                print(f"    Contracts  : {siz['contracts']}")
-                print(f"    Premium    : ${siz['total_premium']:,.0f} collected upfront")
-                print(f"    Cash held  : ${siz['total_cash']:,.0f}  "
-                      f"({siz['pct_of_account']}% of account)")
-                print(f"    Breakeven  : ${siz['breakeven']:.2f} "
-                      f"(stock must stay above this)")
-            else:
-                print(f"    ⚠ Cash required (${opt['cash_required']:,.0f}) "
-                      f"exceeds available capital")
-
-            time_stop_date = (
-                datetime.strptime(opt["expiry"], "%Y-%m-%d")
-                - timedelta(days=config["time_stop_dte"])
-            ).strftime("%b %d")
-
-            print(f"\n  EXIT RULES:")
-            print(f"    ┌─ Let expire worthless if stock stays above "
-                  f"${opt['strike']:.0f} — keep full premium")
-            print(f"    ├─ Buy to close if premium drops 50% "
-                  f"(lock in profit early)")
-            print(f"    ├─ Buy to close if premium rises 200% "
-                  f"(stop loss — limit assignment risk)")
-            print(f"    └─ Time stop: {time_stop_date} — close if still open")
-            print(f"\n  ⚠  thinkorswim: Sell to Open | Put | "
-                  f"${opt['strike']:.0f} strike | {opt['expiry']} expiry")
-            print()
 
     # ── CSP Signals ─────────────────────────────────────────
     csp_signals = scan.get("csp_signals", [])
