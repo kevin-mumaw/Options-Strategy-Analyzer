@@ -70,7 +70,7 @@ WATCHLIST = {
 
 ALL_SYMBOLS = [s for group in WATCHLIST.values() for s in group]
 
-VERSION = "4.26"
+VERSION = "4.27"
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -1961,7 +1961,7 @@ def print_results(scan: dict):
 
     # ── Header ──────────────────────────────────────────────
     print("\n" + "█" * W)
-    print(f"  OPTIONS SCANNER — Phase 1|2|3  v{VERSION}  |  {scan['scan_date']}")
+    print(f"  OPTIONS SCANNER — v{VERSION}  |  {scan['scan_date']}")
     print(f"  Account: ${config['account_size']:,.0f}  |  "
           f"Scanned: {scan['scanned']} symbols")
     print("█" * W)
@@ -2108,16 +2108,24 @@ def print_results(scan: dict):
         print(f"\n  POSITION (${config['account_size']:,.0f} account):")
         if siz and siz["contracts"] > 0:
             # Single leg fits
+            target_gain  = round(siz['target_price'] - opt['ask'], 2)
+            risk_per_cont = round(opt['ask'] - siz['stop_price'], 2)
+            rr           = round(target_gain / risk_per_cont, 2) if risk_per_cont > 0 else 0
+            max_loss     = round(opt['ask'] * 100 * siz['contracts'], 2)
+            stop_loss_dollars = round(risk_per_cont * 100 * siz['contracts'], 2)
+            target_dollars    = round(target_gain * 100 * siz['contracts'], 2)
+
             print(f"    Type      : Single leg CALL")
             print(f"    Contracts : {siz['contracts']}")
             print(f"    Cost      : ${siz['total_cost']:,.0f}  "
                   f"({siz['pct_of_account']}% of account)")
-            # Single leg: target is min_reward_risk per Jason Brown
-            target_gain = round(siz['target_price'] - opt['ask'], 2)
-            rr = round(target_gain / (opt['ask'] - siz['stop_price']), 2)
-            print(f"    Reward/Risk: {rr:.1f}x  "
-                  f"(risking ${opt['ask'] - siz['stop_price']:.2f} "
-                  f"to make ${target_gain:.2f})")
+            print(f"    Max loss  : ${max_loss:,.0f}  (premium expires worthless)")
+            print(f"    Stop loss : -${stop_loss_dollars:,.0f}  "
+                  f"(-35% at ${siz['stop_price']:.2f})")
+            print(f"    Target    : +${target_dollars:,.0f}  "
+                  f"(+75% at ${siz['target_price']:.2f})")
+            print(f"    Max gain  : Unlimited (single leg)")
+            print(f"    Reward/Risk: {rr:.1f}x")
             if rr < config["min_reward_risk"]:
                 print(f"    ⚠  Below {config['min_reward_risk']:.1f}x target — "
                       f"consider tighter stop or higher target")
@@ -2129,11 +2137,11 @@ def print_results(scan: dict):
                   f"(${spr_siz['strike_width']:.0f} wide)")
             print(f"    Buy  : ${opt['strike']:.0f} CALL @ ${opt['ask']:.2f}  (ask)")
             print(f"    Sell : ${spr['strike']:.0f} CALL @ ${spr['bid']:.2f}  (bid)")
-            print(f"    Net debit  : ${spr_siz['net_debit']:.2f}/contract  "
-                  f"(max loss per contract)")
+            print(f"    Net debit  : ${spr_siz['net_debit']:.2f}/contract")
             print(f"    Contracts  : {spr_siz['contracts']}")
             print(f"    Total cost : ${spr_siz['total_cost']:,.0f}  "
                   f"({spr_siz['pct_of_account']}% of account)")
+            print(f"    Max loss   : ${spr_siz['total_cost']:,.0f}  (debit paid)")
             print(f"    Max gain   : ${spr_siz['max_gain']:,.0f}  "
                   f"| Reward/Risk: {spr_siz['reward_risk']:.1f}x")
             if spr_siz["reward_risk"] < config["min_reward_risk"]:
@@ -2282,13 +2290,23 @@ def print_results(scan: dict):
 
             print(f"\n  POSITION (${config['account_size']:,.0f} account):")
             if siz and siz["contracts"] > 0:
-                target_gain = round(siz["target_price"] - opt["ask"], 2)
-                risk        = round(opt["ask"] - siz["stop_price"], 2)
-                rr          = round(target_gain / risk, 2) if risk > 0 else 0
+                target_gain       = round(siz["target_price"] - opt["ask"], 2)
+                risk              = round(opt["ask"] - siz["stop_price"], 2)
+                rr                = round(target_gain / risk, 2) if risk > 0 else 0
+                max_loss          = round(opt['ask'] * 100 * siz['contracts'], 2)
+                stop_loss_dollars = round(risk * 100 * siz['contracts'], 2)
+                target_dollars    = round(target_gain * 100 * siz['contracts'], 2)
+
                 print(f"    Type      : Single leg PUT")
                 print(f"    Contracts : {siz['contracts']}")
                 print(f"    Cost      : ${siz['total_cost']:,.0f}  "
                       f"({siz['pct_of_account']}% of account)")
+                print(f"    Max loss  : ${max_loss:,.0f}  (premium expires worthless)")
+                print(f"    Stop loss : -${stop_loss_dollars:,.0f}  "
+                      f"(-35% at ${siz['stop_price']:.2f})")
+                print(f"    Target    : +${target_dollars:,.0f}  "
+                      f"(+75% at ${siz['target_price']:.2f})")
+                print(f"    Max gain  : Unlimited (single leg)")
                 print(f"    Reward/Risk: {rr:.1f}x")
             else:
                 print(f"    ⚠ Premium too high for account size")
@@ -2359,9 +2377,10 @@ def print_results(scan: dict):
             print(f"    Premium yield: {opt['premium_yield']:.2f}% of strike")
 
             print(f"\n  POSITION (${config['account_size']:,.0f} account):")
+            max_csp_loss = round((opt['strike'] * 100 * siz['contracts']) - siz['total_premium'], 2)
             print(f"    Contracts      : {siz['contracts']}")
-            print(f"    Premium collect: ${siz['total_premium']:,.0f}  "
-                  f"(received upfront)")
+            print(f"    Max gain       : ${siz['total_premium']:,.0f}  (premium collected)")
+            print(f"    Max loss       : ${max_csp_loss:,.0f}  (assigned at strike, stock → $0)")
             print(f"    Cash required  : ${siz['total_cash']:,.0f}  "
                   f"({siz['pct_of_account']}% of account)")
             print(f"    Breakeven      : ${siz['breakeven']:.2f}  "
