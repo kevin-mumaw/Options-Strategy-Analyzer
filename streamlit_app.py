@@ -287,111 +287,122 @@ def main():
             st.error(f"Failed to load scanner: {e}")
             return
 
-    # Build config with user's account size
-    config = dict(s.CONFIG)
-    config["account_size"] = account_size
-
     # Run scan button
     if st.button("🔍 Run Scan", type="primary", use_container_width=True):
         with st.spinner("Scanning 34 symbols..."):
             start = time.time()
             try:
+                config = dict(s.CONFIG)
+                config["account_size"] = account_size
                 results = s.run_scan(symbols=s.ALL_SYMBOLS, config=config)
                 elapsed = round(time.time() - start, 1)
+                st.session_state["results"]     = results
+                st.session_state["elapsed"]     = elapsed
+                st.session_state["account_size"] = account_size
             except Exception as e:
                 st.error(f"Scan error: {e}")
                 return
 
-        # ── Market Regime ────────────────────────────────────
-        regime    = results["regime"]
-        r_name    = regime["regime"]
-        r_dir     = regime.get("direction", "STABLE")
-        icon      = regime_color(r_name)
-        pct_ma50  = regime.get("pct_ma50", 0) or 0
+    # Use stored results if available
+    if "results" not in st.session_state:
+        st.info("👆 Hit Run Scan to get today's signals.")
+        return
 
-        st.markdown("---")
-        st.subheader(f"{icon} Market Regime: {r_name}")
-        st.caption(regime["detail"])
+    results      = st.session_state["results"]
+    elapsed      = st.session_state["elapsed"]
+    config       = dict(s.CONFIG)
+    config["account_size"] = st.session_state.get("account_size", account_size)
 
-        # Market summary
-        if r_name == "BULLISH":
-            if r_dir == "IMPROVING":
-                st.info("🔄 Market recovering to BULLISH — early entries acceptable")
-            elif pct_ma50 > 10:
-                st.warning("Market extended above MA50 — highest conviction only")
-            elif pct_ma50 > 5:
-                st.success("Market healthy — proceed with qualifying setups")
-            else:
-                st.success("Market near support — good entry conditions")
-        elif r_name == "MIXED":
-            if r_dir == "DETERIORATING":
-                st.error("⚠️ Market deteriorating — no new CALL entries")
-            elif r_dir == "IMPROVING":
-                st.warning("⚠️ Recovering from BEARISH — wait for BULLISH confirmation")
-            else:
-                st.warning("⚠️ Transitional market — score 9+ required for CALLs")
-        elif r_name == "BEARISH":
-            st.error("🔴 Market in downtrend — no CALLs, no CSPs. PUT signals only.")
+    # ── Market Regime ────────────────────────────────────
+    regime    = results["regime"]
+    r_name    = regime["regime"]
+    r_dir     = regime.get("direction", "STABLE")
+    icon      = regime_color(r_name)
+    pct_ma50  = regime.get("pct_ma50", 0) or 0
 
-        st.caption(f"Scan completed in {elapsed}s · {results['scan_date']}")
+    st.markdown("---")
+    st.subheader(f"{icon} Market Regime: {r_name}")
+    st.caption(regime["detail"])
 
-        # ── CALL Signals ─────────────────────────────────────
-        signals = results.get("signals", [])
-        st.markdown("---")
-        st.subheader(f"📈 CALL Signals ({len(signals)})")
-
-        if signals:
-            for r in signals:
-                render_signal(r, config, "CALL")
+    # Market summary
+    if r_name == "BULLISH":
+        if r_dir == "IMPROVING":
+            st.info("🔄 Market recovering to BULLISH — early entries acceptable")
+        elif pct_ma50 > 10:
+            st.warning("Market extended above MA50 — highest conviction only")
+        elif pct_ma50 > 5:
+            st.success("Market healthy — proceed with qualifying setups")
         else:
-            st.info("No qualifying CALL setups today. No trade is always a valid choice.")
+            st.success("Market near support — good entry conditions")
+    elif r_name == "MIXED":
+        if r_dir == "DETERIORATING":
+            st.error("⚠️ Market deteriorating — no new CALL entries")
+        elif r_dir == "IMPROVING":
+            st.warning("⚠️ Recovering from BEARISH — wait for BULLISH confirmation")
+        else:
+            st.warning("⚠️ Transitional market — score 9+ required for CALLs")
+    elif r_name == "BEARISH":
+        st.error("🔴 Market in downtrend — no CALLs, no CSPs. PUT signals only.")
 
-        # ── PUT Signals ──────────────────────────────────────
-        put_signals = results.get("put_signals", [])
-        if put_signals:
-            st.markdown("---")
-            st.subheader(f"📉 PUT Signals ({len(put_signals)})")
-            for r in put_signals:
-                render_signal(r, config, "PUT")
+    st.caption(f"Scan completed in {elapsed}s · {results['scan_date']}")
 
-        # ── CSP Signals ──────────────────────────────────────
-        csp_signals = results.get("csp_signals", [])
-        if csp_signals:
-            st.markdown("---")
-            st.subheader(f"💰 CSP Signals ({len(csp_signals)}) — thinkorswim only")
-            for r in csp_signals:
-                render_csp(r, config)
+    # ── CALL Signals ─────────────────────────────────────
+    signals = results.get("signals", [])
+    st.markdown("---")
+    st.subheader(f"📈 CALL Signals ({len(signals)})")
 
-        # ── Near Misses ──────────────────────────────────────
-        near_misses = results.get("near_misses", [])
-        if near_misses:
-            st.markdown("---")
-            with st.expander(f"🔍 Near Misses ({len(near_misses)})"):
-                for r in near_misses:
-                    st.markdown(
-                        f"**{r['symbol']}** {r['score']}/11 — "
-                        f"Trend: {r['trend']} | RSI: {r['rsi']:.1f}"
-                    )
+    if signals:
+        for r in signals:
+            render_signal(r, config, "CALL")
+    else:
+        st.info("No qualifying CALL setups today. No trade is always a valid choice.")
 
-        # ── Disqualified ─────────────────────────────────────
-        hard_fails = [r for r in results.get("all_results", [])
-                      if r.get("hard_fail")
-                      and r.get("score", 0) >= config["min_score"]][:5]
-        if hard_fails:
-            with st.expander(f"🚫 Disqualified ({len(hard_fails)})"):
-                for r in hard_fails:
-                    st.markdown(f"**{r['symbol']}** {r['score']}/11 — {r['hard_fail']}")
+    # ── PUT Signals ──────────────────────────────────────
+    put_signals = results.get("put_signals", [])
+    if put_signals:
+        st.markdown("---")
+        st.subheader(f"📉 PUT Signals ({len(put_signals)})")
+        for r in put_signals:
+            render_signal(r, config, "PUT")
 
-        # ── R/R Failures ─────────────────────────────────────
-        rr_fails = results.get("rr_disqualified", [])
-        if rr_fails:
-            with st.expander(f"⏳ Found Option — Failed R/R ({len(rr_fails)})"):
-                for r in rr_fails:
-                    rr = r.get("rr_fail", "?")
-                    st.markdown(
-                        f"**{r['symbol']}** {r['score']}/11 — "
-                        f"R/R: {rr:.1f}x — wait for pullback or lower IV"
-                    )
+    # ── CSP Signals ──────────────────────────────────────
+    csp_signals = results.get("csp_signals", [])
+    if csp_signals:
+        st.markdown("---")
+        st.subheader(f"💰 CSP Signals ({len(csp_signals)}) — thinkorswim only")
+        for r in csp_signals:
+            render_csp(r, config)
+
+    # ── Near Misses ──────────────────────────────────────
+    near_misses = results.get("near_misses", [])
+    if near_misses:
+        st.markdown("---")
+        with st.expander(f"🔍 Near Misses ({len(near_misses)})"):
+            for r in near_misses:
+                st.markdown(
+                    f"**{r['symbol']}** {r['score']}/11 — "
+                    f"Trend: {r['trend']} | RSI: {r['rsi']:.1f}"
+                )
+
+    # ── Disqualified ─────────────────────────────────────
+    hard_fails = [r for r in results.get("all_results", [])
+                  if r.get("hard_fail")
+                  and r.get("score", 0) >= config["min_score"]][:5]
+    if hard_fails:
+        with st.expander(f"🚫 Disqualified ({len(hard_fails)})"):
+            for r in hard_fails:
+                st.markdown(f"**{r['symbol']}** {r['score']}/11 — {r['hard_fail']}")
+
+    # ── R/R Failures ─────────────────────────────────────
+    rr_fails = results.get("rr_disqualified", [])
+    if rr_fails:
+        with st.expander(f"⏳ Found Option — Failed R/R ({len(rr_fails)})"):
+            for r in rr_fails:
+                rr = r.get("rr_fail", "?")
+                st.markdown(
+                    f"**{r['symbol']}** {r['score']}/11 — "
+                    f"R/R: {rr:.1f}x — wait for pullback or lower IV"
+                )
 
 
 if __name__ == "__main__":
