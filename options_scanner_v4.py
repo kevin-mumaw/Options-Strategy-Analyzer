@@ -2030,7 +2030,7 @@ def print_results(scan: dict):
         if hard_fails:
             print(f"\n  Disqualified (do not chase):")
             for r in hard_fails:
-                print(f"    {r['symbol']:6s}  {r['score']}/10 — {r['hard_fail']}")
+                print(f"    {r['symbol']:6s}  {r['score']}/11 — {r['hard_fail']}")
 
         rr_fails = [r for r in scan["all_results"]
                     if r.get("rr_fail") and not r.get("error")]
@@ -2044,7 +2044,7 @@ def print_results(scan: dict):
         if scan["no_option"]:
             print(f"\n  Qualified but no liquid options:")
             for r in scan["no_option"]:
-                print(f"    {r['symbol']:6s}  {r['score']}/10 — no qualifying option")
+                print(f"    {r['symbol']:6s}  {r['score']}/11 — no qualifying option")
 
         print(f"\n{'─' * W}\n")
         return
@@ -2062,7 +2062,7 @@ def print_results(scan: dict):
 
         print(f"{'━' * W}")
         print(f"  SIGNAL #{i}  |  {sym} — BUY CALL  |  "
-              f"Score: {score}/10  [{conv}]")
+              f"Score: {score}/11  [{conv}]")
         print(f"{'━' * W}")
 
         # Score breakdown
@@ -2192,12 +2192,12 @@ def print_results(scan: dict):
         print(f"{'─' * W}")
         print(f"  DISQUALIFIED — do not chase:")
         for r in hard_fails:
-            print(f"    {r['symbol']:6s}  {r['score']}/10 — {r['hard_fail']}")
+            print(f"    {r['symbol']:6s}  {r['score']}/11 — {r['hard_fail']}")
 
     # ── Also qualified (cut off by signal cap) ──────────────
     if scan.get("also_qualified"):
         print(f"{'─' * W}")
-        print(f"  ALSO QUALIFIED (scored {config['min_score']}+/10 — "
+        print(f"  ALSO QUALIFIED (scored {config['min_score']}+/11 — "
               f"cut off by {config['max_signals']}-signal cap):")
         for r in scan["also_qualified"]:
             opt = r.get("option")
@@ -2210,7 +2210,7 @@ def print_results(scan: dict):
     # ── Near misses ─────────────────────────────────────────
     if scan["near_misses"]:
         print(f"{'─' * W}")
-        print(f"  NEAR MISSES (score {config['min_score']-1}/10 — "
+        print(f"  NEAR MISSES (score {config['min_score']-1}/11 — "
               f"one more factor could qualify):")
         for r in scan["near_misses"]:
             print(f"    {r['symbol']:6s}  {r['score']}/10  "
@@ -2237,7 +2237,7 @@ def print_results(scan: dict):
         print(f"  NO QUALIFYING OPTION FOUND"
               f"{f' (+ {more} more)' if more > 0 else ''}:")
         for r in no_opt_display:
-            print(f"    {r['symbol']:6s}  {r['score']}/10 — "
+            print(f"    {r['symbol']:6s}  {r['score']}/11 — "
                   f"no option met delta/liquidity requirements")
 
     # ── PUT Signals ─────────────────────────────────────────
@@ -2348,7 +2348,7 @@ def print_results(scan: dict):
 
             print(f"\n{'━' * W}")
             print(f"  CSP #{i}  |  {sym} — SELL PUT  |  "
-                  f"Score: {score}/10  [{conv}]")
+                  f"Score: {score}/11  [{conv}]")
             print(f"{'━' * W}")
 
             print(f"\n  WHY THIS TRADE:")
