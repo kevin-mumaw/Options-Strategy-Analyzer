@@ -262,21 +262,184 @@ def render_csp(r, config):
 
 
 # ─────────────────────────────────────────────────────────────
+# Google Sheets — read open positions
+# ─────────────────────────────────────────────────────────────
+SHEET_ID = "1tcNnijOAzxfn9M3bwwBvKZ72ENRLL7cnW2Y774w6ev0"
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
+
+@st.cache_data(ttl=60)  # refresh every 60 seconds
+def load_journal():
+    """Load trade journal from public Google Sheet."""
+    try:
+        import pandas as pd
+        df = pd.read_csv(SHEET_URL)
+        return df
+    except Exception as e:
+        return None
+
+
+def get_current_premium(symbol: str, strike: float,
+                         expiry: str, direction: str) -> float:
+    """Fetch current option premium from yfinance."""
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+        chain  = ticker.option_chain(expiry)
+        if direction == "BUY CALL":
+            opts = chain.calls
+        else:
+            opts = chain.puts
+        row = opts[opts["strike"] == strike]
+        if not row.empty:
+            bid = float(row.iloc[0]["bid"])
+            ask = float(row.iloc[0]["ask"])
+            return round((bid + ask) / 2, 2)
+    except Exception:
+        pass
+    return None
+
+
+def render_position_tracker():
+    """Display open positions with live P&L."""
+    st.subheader("📋 Open Positions")
+
+    df = load_journal()
+
+    if df is None:
+        st.error("Could not load journal from Google Sheets.")
+        return
+
+    open_trades = df[df["status"] == "OPEN"].copy()
+
+    if open_trades.empty:
+        st.info("No open positions.")
+        return
+
+    from datetime import datetime
+    today = datetime.today().date()
+
+    for _, trade in open_trades.iterrows():
+        sym           = trade["symbol"]
+        direction     = trade["direction"]
+        entry_premium = float(trade["entry_premium"])
+        stop_price    = float(trade["stop_price"])
+        target_price  = float(trade["target_price"])
+        contracts     = int(trade["contracts"])
+        time_stop     = trade["time_stop_date"]
+        trade_id      = trade["trade_id"]
+        score         = trade["score"]
+
+        # Days to time stop
+        try:
+            stop_date  = datetime.strptime(str(time_stop), "%Y-%m-%d").date()
+            days_left  = (stop_date - today).days
+        except Exception:
+            days_left  = None
+
+        # Current premium
+        try:
+            # Parse strike and expiry from trade_id or notes
+            # Use yfinance to get ATM option price as proxy
+            import yfinance as yf
+            ticker     = yf.Ticker(sym)
+            hist       = ticker.history(period="1d")
+            stock_price = float(hist["Close"].iloc[-1]) if not hist.empty else None
+        except Exception:
+            stock_price = None
+
+        # Try to get actual option premium
+        current_premium = None
+        # We don't store strike/expiry in journal so use stock price as proxy
+        # Show what we have and note it's approximate
+        if stock_price:
+            # Estimate current option value based on stock move
+            pass
+
+        # P&L based on last known vs entry
+        # Show entry-based metrics
+        pnl_at_stop   = round((stop_price - entry_premium) * 100 * contracts, 2)
+        pnl_at_target = round((target_price - entry_premium) * 100 * contracts, 2)
+
+        # Status color
+        if days_left is not None and days_left <= 5:
+            status_color = "🔴"
+        elif days_left is not None and days_left <= 10:
+            status_color = "🟡"
+        else:
+            status_color = "🟢"
+
+        with st.expander(
+            f"{status_color} {sym} — {direction}  |  "
+            f"Entry: ${entry_premium:.2f}  |  "
+            f"{days_left}d to time stop",
+            expanded=True
+        ):
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Entry Premium", f"${entry_premium:.2f}")
+            col2.metric("Contracts", contracts)
+            col3.metric("Score", f"{score}/11")
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Stop Loss", f"${stop_price:.2f}",
+                        f"${pnl_at_stop:+.0f} if hit")
+            col2.metric("Target", f"${target_price:.2f}",
+                        f"${pnl_at_target:+.0f} if hit")
+            col3.metric("Time Stop", str(time_stop),
+                        f"{days_left}d remaining" if days_left else "")
+
+            if stock_price:
+                st.metric(f"{sym} Stock Price", f"${stock_price:.2f}")
+
+            # Progress bar — where is premium between stop and target
+            range_total = target_price - stop_price
+            current_pos = entry_premium - stop_price
+            progress    = max(0.0, min(1.0, current_pos / range_total))
+            st.progress(progress, text=f"Entry position: stop ◄──── ${entry_premium:.2f} ────► target")
+
+            if trade["notes"]:
+                st.caption(f"Notes: {trade['notes']}")
+
+            st.caption(f"Trade ID: {trade_id} | Entered: {trade['entry_date']}")
+
+    # Summary stats
+    all_closed = df[df["status"].isin(["WIN", "LOSS"])]
+    if not all_closed.empty:
+        st.divider()
+        wins      = len(df[df["status"] == "WIN"])
+        losses    = len(df[df["status"] == "LOSS"])
+        total_pnl = df[df["pnl_dollars"].notna()]["pnl_dollars"].astype(float).sum()
+        win_rate  = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else 0
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Wins", wins)
+        col2.metric("Losses", losses)
+        col3.metric("Win Rate", f"{win_rate}%")
+        col4.metric("Total P&L", f"${total_pnl:+.2f}")
+
+
+# ─────────────────────────────────────────────────────────────
 # Main App
 # ─────────────────────────────────────────────────────────────
 def main():
     st.title("📊 Options Scanner")
     st.caption("Systematic options signals · Jason Brown / PTU Framework")
 
-    # Account size slider
-    account_size = st.slider(
-        "Account Size",
-        min_value=1000,
-        max_value=25000,
-        value=5000,
-        step=500,
-        format="$%d",
-    )
+    # Tabs
+    tab1, tab2 = st.tabs(["🔍 Scanner", "📋 Positions"])
+
+    with tab2:
+        render_position_tracker()
+
+    with tab1:
+        # Account size slider
+        account_size = st.slider(
+            "Account Size",
+            min_value=1000,
+            max_value=25000,
+            value=5000,
+            step=500,
+            format="$%d",
+        )
 
     # Load scanner
     with st.spinner("Loading scanner..."):
