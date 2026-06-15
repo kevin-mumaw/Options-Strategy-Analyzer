@@ -418,6 +418,105 @@ def render_position_tracker():
 
 
 # ─────────────────────────────────────────────────────────────
+# CAN SLIM Scanner — load from GitHub
+# ─────────────────────────────────────────────────────────────
+CANSLIM_URL = (
+    "https://raw.githubusercontent.com/kevin-mumaw/"
+    "canslim_scanner/main/canslim_scanner.py"
+)
+
+CANSLIM_SYMBOLS = [
+    "NVDA", "AAPL", "MSFT", "GOOGL", "META",
+    "JPM", "GS", "V", "MA", "UNH", "LLY", "CAT", "DE"
+]
+
+@st.cache_resource(ttl=300)
+def load_canslim():
+    """Download and import the CAN SLIM scanner module."""
+    import importlib
+    for mod in list(sys.modules.keys()):
+        if "canslim" in mod:
+            del sys.modules[mod]
+    if os.path.exists("canslim_scanner.py"):
+        os.remove("canslim_scanner.py")
+    r = requests.get(CANSLIM_URL)
+    r.raise_for_status()
+    with open("canslim_scanner.py", "w") as f:
+        f.write(r.text)
+    import canslim_scanner as cs
+    return cs
+
+
+def render_canslim():
+    """Display CAN SLIM scan results."""
+    st.subheader("📊 CAN SLIM Scanner")
+    st.caption("William O'Neil methodology · 7 criteria · Min 4/7 to qualify")
+
+    with st.spinner("Loading CAN SLIM scanner..."):
+        try:
+            cs = load_canslim()
+        except Exception as e:
+            st.error(f"Failed to load CAN SLIM scanner: {e}")
+            return
+
+    if st.button("🔍 Run CAN SLIM Scan", type="primary", use_container_width=True):
+        with st.spinner("Scanning 13 symbols..."):
+            try:
+                import io
+                from contextlib import redirect_stdout
+                scanner = cs.CANSLIMScanner()
+                # Suppress print output
+                f = io.StringIO()
+                with redirect_stdout(f):
+                    results = scanner.scan(CANSLIM_SYMBOLS, min_passes=4)
+                st.session_state["canslim_results"] = results
+            except Exception as e:
+                st.error(f"Scan error: {e}")
+                return
+
+    if "canslim_results" not in st.session_state:
+        st.info("👆 Hit Run CAN SLIM Scan to screen stocks.")
+        return
+
+    results = st.session_state["canslim_results"]
+
+    if not results:
+        st.info("No stocks passed 4/7 criteria today.")
+        return
+
+    criteria_labels = {
+        "C": "Current Earnings (Q EPS growth)",
+        "A": "Annual Earnings (3-yr avg)",
+        "N": "Near 52-week High",
+        "S": "Supply/Demand (Up/Down vol)",
+        "L": "Leader vs Laggard (RS Rating)",
+        "I": "Institutional Sponsorship",
+        "M": "Market Direction (SPY)",
+    }
+
+    for r in results:
+        sym    = r["symbol"]
+        passes = r["passes"]
+        bar    = "█" * passes + "░" * (7 - passes)
+
+        with st.expander(
+            f"**{sym}** [{bar}] {passes}/7 criteria",
+            expanded=passes >= 6
+        ):
+            if r.get("error"):
+                st.error(f"Error: {r['error']}")
+                continue
+
+            for key, label in criteria_labels.items():
+                crit   = r.get(key, {})
+                passed = crit.get("score", False)
+                detail = crit.get("detail", "No data")
+                icon   = "✅" if passed else "❌"
+                st.markdown(f"{icon} **{key} — {label}**")
+                st.caption(f"   {detail}")
+
+
+# ─────────────────────────────────────────────────────────────
 # Main App
 # ─────────────────────────────────────────────────────────────
 def main():
@@ -425,10 +524,13 @@ def main():
     st.caption("Systematic options signals · Jason Brown / PTU Framework")
 
     # Tabs
-    tab1, tab2 = st.tabs(["🔍 Scanner", "📋 Positions"])
+    tab1, tab2, tab3 = st.tabs(["🔍 Scanner", "📋 Positions", "📊 CAN SLIM"])
 
     with tab2:
         render_position_tracker()
+
+    with tab3:
+        render_canslim()
 
     with tab1:
         # Account size slider
