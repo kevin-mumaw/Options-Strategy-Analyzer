@@ -1,0 +1,19 @@
+# Financial math calculations for the three MSFT bull call spreads with $5.00 width.
+# Net debits:
+# 400/405 (assumed/implied higher cost, let's look at 405/410 which is given as 1.95)
+debit_405_410 = 1.95
+width = 5.00
+
+max_profit_405_410 = width - debit_405_410
+roi_405_410 = (max_profit_405_410 / debit_405_410) * 100
+breakeven_405_410 = 405.00 + debit_405_410
+
+current_price = 393.83
+move_to_be = ((breakeven_405_410 - current_price) / current_price) * 100
+move_to_max = ((410.00 - current_price) / current_price) * 100
+
+print(f"Max Profit: ${max_profit_405_410:.2f}")
+print(f"ROI: {roi_405_410:.1f}%")
+print(f"Breakeven: ${breakeven_405_410:.2f}")
+print(f"Move to BE: {move_to_be:.1f}%")
+print(f"Move to Max: {move_to_max:.1f}%")
