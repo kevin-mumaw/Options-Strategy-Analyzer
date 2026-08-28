@@ -1,4 +1,4 @@
-# 📊 Options Strategy Analyzer
+# Options Strategy Analyzer  Archived — not actively maintained. Superseded by Options Intelligence Desk. Kept for reference; last backtest results (50.1% win rate, 2.06 profit factor, 34 symbols, 2023–2024) below.
 
 A Google Colab-based options strategy research notebook for identifying and validating directional options trades using technical analysis, market regime filtering, and historical backtesting.
 
